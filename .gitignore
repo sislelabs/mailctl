@@ -1,0 +1,10 @@
+# Binary
+mailctl
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (contains API keys)
+.mailctl.yaml
