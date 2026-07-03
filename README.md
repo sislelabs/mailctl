@@ -1,6 +1,6 @@
 # mailctl
 
-CLI tool for managing custom domain email. Uses [Cloudflare Email Routing](https://developers.cloudflare.com/email-routing/) for receiving and [Brevo](https://brevo.com) for sending.
+CLI tool for managing custom domain email. Uses [Cloudflare Email Routing](https://developers.cloudflare.com/email-routing/) for receiving and either [Brevo](https://brevo.com) or [Resend](https://resend.com) for sending.
 
 Set up professional email for any domain in one command — no Google Workspace, no Fastmail, no monthly fees.
 
@@ -17,10 +17,10 @@ That single command:
 - Enables email routing with MX records
 - Creates forwarding rules for each alias
 - Enables catch-all forwarding
-- Adds the domain to Brevo
+- Adds the domain to your sending provider (Brevo or Resend)
 - Creates SPF/DKIM DNS records
 - Authenticates the domain for sending
-- Creates sender addresses
+- Creates sender addresses (Brevo)
 - Prints Gmail Send-As setup instructions
 
 ## Install
@@ -118,9 +118,16 @@ Stored at `~/.mailctl.yaml` with `0600` permissions.
 cloudflare_api_token: "cfut_..."
 cloudflare_account_id: "abc123..."
 
+# Sending provider: "brevo" (default) or "resend"
+provider: "brevo"
+
+# Brevo (when provider: brevo)
 brevo_api_key: "xkeysib-..."
 brevo_smtp_key: "xsmtpsib-..."
 brevo_smtp_login: "xxx@smtp-brevo.com"
+
+# Resend (when provider: resend)
+resend_api_key: "re_..."
 
 default_forward_to: "you@gmail.com"
 
@@ -128,6 +135,7 @@ default_forward_to: "you@gmail.com"
 domains:
   - domain: yourdomain.com
     cloudflare_zone_id: "..."
+    resend_domain_id: "..."   # only present when provider: resend
     aliases:
       - alias: hello
         forward_to: [you@gmail.com]
@@ -141,11 +149,28 @@ smtp:
   default_from: "hello@yourdomain.com"
 ```
 
+## Sending providers
+
+mailctl can send through **Brevo** (default) or **Resend**. Pick one with the
+`provider` field in config (or during `mailctl init`).
+
+| | Brevo | Resend |
+|---|---|---|
+| Config | `brevo_api_key`, `brevo_smtp_key`, `brevo_smtp_login` | `resend_api_key` |
+| Domain auth | by domain name | by domain ID (stored as `resend_domain_id`) |
+| Senders | explicit sender per alias | implicit — any address on a verified domain |
+| Flow `email.send` | SMTP | HTTP API |
+| Gmail Send-As SMTP | `smtp-relay.brevo.com` | `smtp.resend.com` (user `resend`, password = API key) |
+
+Switching providers only affects **sending** — Cloudflare receiving is
+identical either way. Re-run `mailctl add` for a domain after switching so it's
+registered with the new provider.
+
 ## Prerequisites
 
 - **Go 1.22+** — [install Go](https://go.dev/dl/)
 - **A domain on Cloudflare** — DNS must be managed by Cloudflare
-- **A Brevo account** — free tier works, needed for SMTP sending
+- **A sending account** — a [Brevo](https://brevo.com) account (free tier works, needed for SMTP) **or** a [Resend](https://resend.com) account with an API key
 
 ### Cloudflare API Token
 

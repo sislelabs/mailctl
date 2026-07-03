@@ -7,6 +7,7 @@ import (
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/brevo"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
+	"github.com/sislelabs/mailctl/internal/resend"
 	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -47,7 +48,6 @@ func runCheck(cmd *cobra.Command, args []string) error {
 
 func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
-	bv := brevo.NewClient(cfg.BrevoAPIKey)
 
 	issues := 0
 	var sections []string
@@ -133,41 +133,11 @@ func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 		sections = append(sections, title+"\n"+strings.Join(rows, "\n"))
 	}
 
-	// ── Brevo Domain ───────────────────────────────────────────────
-	{
-		title := ui.SectionTitle.Render("Brevo Domain")
-		var rows []string
-		bDomain, err := bv.GetDomain(d.Domain)
-		if err != nil {
-			rows = append(rows, ui.StepResult(ui.IconWarn, ui.Dim.Render("Not configured in Brevo")))
-		} else {
-			if bDomain.Authenticated {
-				rows = append(rows, ui.StepResult(ui.IconSuccess, ui.Success.Render("Authenticated")+" "+ui.Dim.Render("— sending ready")))
-			} else if bDomain.Verified {
-				rows = append(rows, ui.StepResult(ui.IconPending, ui.Info.Render("Verified")+" "+ui.Dim.Render("— DKIM not yet authenticated")))
-			} else {
-				rows = append(rows, ui.StepResult(ui.IconPending, ui.Info.Render("Pending")+" "+ui.Dim.Render("— waiting for DNS verification")))
-			}
-
-			// DNS Records
-			rows = append(rows, "")
-			rows = append(rows, "  "+ui.Dim.Render("DNS Records:"))
-			for _, rec := range bDomain.FlatDNSRecords() {
-				icon := ui.IconPending
-				statusText := "pending"
-				if rec.Status {
-					icon = ui.IconSuccess
-					statusText = "verified"
-				}
-				name := brevo.FullRecordName(rec, d.Domain)
-				rows = append(rows, fmt.Sprintf("    %s %s %s %s",
-					icon,
-					ui.Dim.Render(rec.Type),
-					ui.White.Render(name),
-					ui.Dim.Render(statusText)))
-			}
-		}
-		sections = append(sections, title+"\n"+strings.Join(rows, "\n"))
+	// ── Sending Domain (provider-specific) ─────────────────────────
+	if cfg.SendingProvider() == internal.ProviderResend {
+		sections = append(sections, checkResendDomain(cfg, d))
+	} else {
+		sections = append(sections, checkBrevoDomain(cfg, d))
 	}
 
 	// ── MX Records ──────────────────────────────────────────────────
@@ -217,4 +187,95 @@ func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 	fmt.Println(header)
 	fmt.Println(box)
 	fmt.Println()
+}
+
+// checkBrevoDomain renders the Brevo sending-domain section for the health check.
+func checkBrevoDomain(cfg *internal.Config, d *internal.DomainConfig) string {
+	bv := brevo.NewClient(cfg.BrevoAPIKey)
+	title := ui.SectionTitle.Render("Brevo Domain")
+	var rows []string
+	bDomain, err := bv.GetDomain(d.Domain)
+	if err != nil {
+		rows = append(rows, ui.StepResult(ui.IconWarn, ui.Dim.Render("Not configured in Brevo")))
+	} else {
+		if bDomain.Authenticated {
+			rows = append(rows, ui.StepResult(ui.IconSuccess, ui.Success.Render("Authenticated")+" "+ui.Dim.Render("— sending ready")))
+		} else if bDomain.Verified {
+			rows = append(rows, ui.StepResult(ui.IconPending, ui.Info.Render("Verified")+" "+ui.Dim.Render("— DKIM not yet authenticated")))
+		} else {
+			rows = append(rows, ui.StepResult(ui.IconPending, ui.Info.Render("Pending")+" "+ui.Dim.Render("— waiting for DNS verification")))
+		}
+
+		rows = append(rows, "")
+		rows = append(rows, "  "+ui.Dim.Render("DNS Records:"))
+		for _, rec := range bDomain.FlatDNSRecords() {
+			icon := ui.IconPending
+			statusText := "pending"
+			if rec.Status {
+				icon = ui.IconSuccess
+				statusText = "verified"
+			}
+			name := brevo.FullRecordName(rec, d.Domain)
+			rows = append(rows, fmt.Sprintf("    %s %s %s %s",
+				icon,
+				ui.Dim.Render(rec.Type),
+				ui.White.Render(name),
+				ui.Dim.Render(statusText)))
+		}
+	}
+	return title + "\n" + strings.Join(rows, "\n")
+}
+
+// checkResendDomain renders the Resend sending-domain section for the health check.
+func checkResendDomain(cfg *internal.Config, d *internal.DomainConfig) string {
+	rc := resend.NewClient(cfg.ResendAPIKey)
+	title := ui.SectionTitle.Render("Resend Domain")
+	var rows []string
+
+	// Prefer the stored ID; fall back to a name lookup for domains added
+	// before the ID was persisted.
+	var rd *resend.Domain
+	var err error
+	if d.ResendDomainID != "" {
+		rd, err = rc.GetDomain(d.ResendDomainID)
+	} else {
+		rd, err = rc.FindDomainByName(d.Domain)
+	}
+
+	if err != nil || rd == nil {
+		rows = append(rows, ui.StepResult(ui.IconWarn, ui.Dim.Render("Not configured in Resend")))
+		return title + "\n" + strings.Join(rows, "\n")
+	}
+
+	if rd.Authenticated() {
+		rows = append(rows, ui.StepResult(ui.IconSuccess, ui.Success.Render("Verified")+" "+ui.Dim.Render("— sending ready")))
+	} else {
+		rows = append(rows, ui.StepResult(ui.IconPending, ui.Info.Render(titleCase(rd.Status))+" "+ui.Dim.Render("— waiting for DNS verification")))
+	}
+
+	rows = append(rows, "")
+	rows = append(rows, "  "+ui.Dim.Render("DNS Records:"))
+	for _, rec := range rd.Records {
+		icon := ui.IconPending
+		statusText := "pending"
+		if strings.EqualFold(rec.Status, "verified") {
+			icon = ui.IconSuccess
+			statusText = "verified"
+		}
+		name := resendRecordName(rec.Name, d.Domain)
+		rows = append(rows, fmt.Sprintf("    %s %s %s %s",
+			icon,
+			ui.Dim.Render(rec.Type),
+			ui.White.Render(name),
+			ui.Dim.Render(statusText)))
+	}
+	return title + "\n" + strings.Join(rows, "\n")
+}
+
+// titleCase upper-cases the first rune of s (ASCII), used for status labels.
+func titleCase(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }

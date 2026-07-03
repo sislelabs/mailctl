@@ -7,6 +7,7 @@ import (
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
 	"github.com/sislelabs/mailctl/internal/brevo"
+	"github.com/sislelabs/mailctl/internal/resend"
 	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -244,6 +245,14 @@ func NewDeleteConfirmModel(cfg *internal.Config, domain string) DeleteConfirmMod
 	}
 }
 
+// providerName is the display name of the configured sending provider.
+func (m DeleteConfirmModel) providerName() string {
+	if m.cfg.SendingProvider() == internal.ProviderResend {
+		return "Resend"
+	}
+	return "Brevo"
+}
+
 func (m DeleteConfirmModel) Init() tea.Cmd {
 	return textinput.Blink
 }
@@ -291,9 +300,22 @@ func deleteDomain(cfg *internal.Config, domain string) tea.Msg {
 		}
 	}
 
-	// Delete Brevo domain
-	bv := brevo.NewClient(cfg.BrevoAPIKey)
-	bv.DeleteDomain(domain)
+	// Delete the sending-provider domain
+	if cfg.SendingProvider() == internal.ProviderResend {
+		rc := resend.NewClient(cfg.ResendAPIKey)
+		id := d.ResendDomainID
+		if id == "" {
+			if rd, err := rc.FindDomainByName(domain); err == nil && rd != nil {
+				id = rd.ID
+			}
+		}
+		if id != "" {
+			rc.DeleteDomain(id)
+		}
+	} else {
+		bv := brevo.NewClient(cfg.BrevoAPIKey)
+		bv.DeleteDomain(domain)
+	}
 
 	// Delete DNS records
 	txtRecords, err := cf.ListDNSRecords(d.CloudflareZoneID, "TXT")
@@ -319,7 +341,7 @@ func (m DeleteConfirmModel) View() string {
 		ui.Error.Bold(true).Render("Delete "+m.domain) + "\n\n" +
 			ui.Dim.Render("This will remove:") + "\n" +
 			ui.Dim.Render("  "+ui.IconDot+" Cloudflare routing rules") + "\n" +
-			ui.Dim.Render("  "+ui.IconDot+" Brevo domain") + "\n" +
+			ui.Dim.Render("  "+ui.IconDot+" "+m.providerName()+" domain") + "\n" +
 			ui.Dim.Render("  "+ui.IconDot+" DNS records") + "\n" +
 			ui.Dim.Render("  "+ui.IconDot+" Config entry") + "\n\n" +
 			"Type " + ui.Error.Bold(true).Render(m.domain) + " to confirm:\n\n" +

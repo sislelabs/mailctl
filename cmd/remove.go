@@ -7,6 +7,7 @@ import (
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/brevo"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
+	"github.com/sislelabs/mailctl/internal/resend"
 	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -48,10 +49,15 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("domain %s not found in config", domain)
 	}
 
+	providerName := "Brevo"
+	if cfg.SendingProvider() == internal.ProviderResend {
+		providerName = "Resend"
+	}
+
 	if !removeForce {
 		var items []string
 		items = append(items, ui.IconDot+" Cloudflare email routing rules")
-		items = append(items, ui.IconDot+" Brevo domain")
+		items = append(items, ui.IconDot+" "+providerName+" domain")
 		items = append(items, ui.IconDot+" Sending DNS records")
 		items = append(items, ui.IconDot+" Config entry")
 
@@ -69,16 +75,17 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	provider := cfg.SendingProvider()
+
 	stepLabels := []string{
 		"Delete routing rules",
-		"Delete Brevo domain",
+		"Delete " + providerName + " domain",
 		"Clean up DNS records",
 		"Remove from config",
 	}
 
 	err = ui.RunProgress("Removing "+ui.Error.Bold(true).Render(domain), stepLabels, func(p *ui.ProgressRunner) {
 		cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
-		bv := brevo.NewClient(cfg.BrevoAPIKey)
 
 		// Step 0: Delete routing rules
 		p.Start(0)
@@ -103,12 +110,32 @@ func runRemove(cmd *cobra.Command, args []string) error {
 			p.Done(0, fmt.Sprintf("%d deleted", count))
 		}
 
-		// Step 1: Delete Brevo domain
+		// Step 1: Delete the sending-provider domain
 		p.Start(1)
-		if err := bv.DeleteDomain(domain); err != nil {
-			p.Warn(1, "not found or already deleted")
+		if provider == internal.ProviderResend {
+			rc := resend.NewClient(cfg.ResendAPIKey)
+			id := d.ResendDomainID
+			if id == "" {
+				// Fall back to a name lookup for domains added before the ID
+				// was persisted.
+				if rd, err := rc.FindDomainByName(domain); err == nil && rd != nil {
+					id = rd.ID
+				}
+			}
+			if id == "" {
+				p.Warn(1, "not found or already deleted")
+			} else if err := rc.DeleteDomain(id); err != nil {
+				p.Warn(1, "not found or already deleted")
+			} else {
+				p.Done(1, "")
+			}
 		} else {
-			p.Done(1, "")
+			bv := brevo.NewClient(cfg.BrevoAPIKey)
+			if err := bv.DeleteDomain(domain); err != nil {
+				p.Warn(1, "not found or already deleted")
+			} else {
+				p.Done(1, "")
+			}
 		}
 
 		// Step 2: Clean up DNS records

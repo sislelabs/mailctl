@@ -19,6 +19,10 @@ type DomainConfig struct {
 	CloudflareZoneID string  `yaml:"cloudflare_zone_id"`
 	Aliases          []Alias `yaml:"aliases,omitempty"`
 	AddedAt          string  `yaml:"added_at"`
+	// ResendDomainID is Resend's opaque domain identifier (UUID). Resend
+	// addresses domains by ID rather than name, so we persist it here for
+	// later check/remove operations. Empty for Brevo-managed domains.
+	ResendDomainID string `yaml:"resend_domain_id,omitempty"`
 }
 
 type SMTPConfig struct {
@@ -29,15 +33,33 @@ type SMTPConfig struct {
 	DefaultFrom string `yaml:"default_from"`
 }
 
+// Sending providers supported for domain authentication and email sending.
+const (
+	ProviderBrevo  = "brevo"
+	ProviderResend = "resend"
+)
+
 type Config struct {
-	CloudflareAPIToken  string         `yaml:"cloudflare_api_token"`
-	CloudflareAccountID string         `yaml:"cloudflare_account_id"`
-	BrevoAPIKey         string         `yaml:"brevo_api_key"`
-	BrevoSMTPKey        string         `yaml:"brevo_smtp_key"`
-	BrevoSMTPLogin      string         `yaml:"brevo_smtp_login"`
-	DefaultForwardTo    string         `yaml:"default_forward_to"`
-	Domains []DomainConfig `yaml:"domains,omitempty"`
-	SMTP    *SMTPConfig    `yaml:"smtp,omitempty"`
+	CloudflareAPIToken  string `yaml:"cloudflare_api_token"`
+	CloudflareAccountID string `yaml:"cloudflare_account_id"`
+	// Provider selects the sending provider: "brevo" (default) or "resend".
+	Provider         string `yaml:"provider,omitempty"`
+	BrevoAPIKey      string `yaml:"brevo_api_key,omitempty"`
+	BrevoSMTPKey     string `yaml:"brevo_smtp_key,omitempty"`
+	BrevoSMTPLogin   string `yaml:"brevo_smtp_login,omitempty"`
+	ResendAPIKey     string `yaml:"resend_api_key,omitempty"`
+	DefaultForwardTo string `yaml:"default_forward_to"`
+	Domains          []DomainConfig `yaml:"domains,omitempty"`
+	SMTP             *SMTPConfig    `yaml:"smtp,omitempty"`
+}
+
+// SendingProvider returns the configured provider, defaulting to Brevo so
+// that existing configs written before Resend support keep working.
+func (c *Config) SendingProvider() string {
+	if c.Provider == ProviderResend {
+		return ProviderResend
+	}
+	return ProviderBrevo
 }
 
 func ConfigPath() string {

@@ -8,6 +8,7 @@ import (
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/brevo"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
+	"github.com/sislelabs/mailctl/internal/resend"
 	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -52,7 +53,18 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
-	bv := brevo.NewClient(cfg.BrevoAPIKey)
+	provider := cfg.SendingProvider()
+
+	var bv *brevo.Client
+	var rc *resend.Client
+	providerLabel := "Brevo"
+	switch provider {
+	case internal.ProviderResend:
+		rc = resend.NewClient(cfg.ResendAPIKey)
+		providerLabel = "Resend"
+	default:
+		bv = brevo.NewClient(cfg.BrevoAPIKey)
+	}
 
 	stepLabels := []string{
 		"Look up Cloudflare zone",
@@ -60,7 +72,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		"Verify destination address",
 		"Create routing rules",
 		"Enable catch-all",
-		"Add domain to Brevo",
+		"Add domain to " + providerLabel,
 		"Add DNS records",
 		"Authenticate domain",
 		"Create senders",
@@ -69,6 +81,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 
 	var zoneID string
 	var cfAliases []internal.Alias
+	var resendDomainID string
 	var afterOutput string
 
 	err = ui.RunProgress("Setting up "+ui.Highlight.Render(domain), stepLabels, func(p *ui.ProgressRunner) {
@@ -168,85 +181,28 @@ func runAdd(cmd *cobra.Command, args []string) error {
 			p.Done(4, ui.Dim.Render("*@"+domain+" → "+forwardTo))
 		}
 
-		// Step 5: Add domain to Brevo
-		p.Start(5)
-		brevoDomain, err := bv.AddDomain(domain)
-		if err != nil {
-			p.Warn(5, "failed — receiving still works")
-			p.SubRow(5, ui.Dim.Render(err.Error()))
-
-			p.Start(6)
-			p.Warn(6, "skipped")
-			p.Start(7)
-			p.Warn(7, "skipped")
-			p.Start(8)
-			p.Warn(8, "skipped")
+		// Steps 5–8: register the domain with the sending provider, add its
+		// DNS records to Cloudflare, trigger authentication, and (Brevo only)
+		// create senders. Receiving already works regardless of the outcome.
+		if provider == internal.ProviderResend {
+			setupResend(p, cf, rc, zone.ID, domain, &resendDomainID)
 		} else {
-			p.Done(5, "")
-
-			// Step 6: Add DNS records to Cloudflare
-			p.Start(6)
-			for _, rec := range brevoDomain.FlatDNSRecords() {
-				name := brevo.FullRecordName(rec, domain)
-				cfRec := cloudflare.DNSRecord{
-					Type:    rec.Type,
-					Name:    name,
-					Content: rec.Value,
-					TTL:     3600,
-				}
-				if err := cf.CreateDNSRecord(zone.ID, cfRec); err != nil {
-					p.SubRow(6, ui.IconWarn+" "+ui.Dim.Render(rec.Type+" "+name+" — "+err.Error()))
-				} else {
-					p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
-				}
-			}
-			p.Done(6, "")
-
-			// Step 7: Authenticate domain
-			p.Start(7)
-			time.Sleep(2 * time.Second)
-			if err := bv.AuthenticateDomain(domain); err != nil {
-				p.Warn(7, "pending — DNS may need time to propagate")
-			} else {
-				p.Done(7, "")
-			}
-
-			// Step 8: Create senders for each alias
-			p.Start(8)
-			for _, alias := range aliases {
-				addr := fmt.Sprintf("%s@%s", alias, domain)
-				name := strings.ToUpper(alias[:1]) + alias[1:]
-				if err := bv.CreateSender(name, addr); err != nil {
-					p.SubRow(8, ui.IconWarn+" "+ui.Dim.Render(addr+" — "+err.Error()))
-				} else {
-					p.SubRow(8, ui.IconSuccess+" "+ui.Dim.Render(addr))
-				}
-			}
-			p.Done(8, "")
+			setupBrevo(p, cf, bv, zone.ID, domain, aliases)
 		}
 
 		// Step 9: Save config
 		p.Start(9)
 		cfg.AddDomain(domain, zoneID, cfAliases)
+		if d := cfg.FindDomain(domain); d != nil {
+			d.ResendDomainID = resendDomainID
+		}
 		if err := internal.SaveConfig(cfg); err != nil {
 			p.Fail(9, err.Error())
 			return
 		}
 		p.Done(9, "")
 
-		afterOutput = "\n" + ui.SuccessPanel.Render(
-			ui.Success.Bold(true).Render(domain+" is set up!")+"\n\n"+
-				ui.Dim.Render("To send from Gmail:")+"\n"+
-				ui.Dim.Render("1. Open ")+ui.Highlight.Render("https://mail.google.com/mail/#settings/accounts")+"\n"+
-				ui.Dim.Render("2. Click 'Add another email address'")+"\n"+
-				ui.Dim.Render("3. Uncheck 'Treat as an alias', use these SMTP settings:")+"\n\n"+
-				ui.KeyValue("Server", "smtp-relay.brevo.com")+"\n"+
-				ui.KeyValue("Port", "587")+"\n"+
-				ui.KeyValue("Username", cfg.BrevoSMTPLogin)+"\n"+
-				ui.KeyValue("Password", cfg.BrevoSMTPKey)+"\n"+
-				ui.KeyValue("Security", "TLS")+"\n\n"+
-				ui.Dim.Render("4. Enter the verification code from your inbox"),
-		) + "\n"
+		afterOutput = "\n" + successPanel(provider, domain, cfg) + "\n"
 	})
 
 	if err != nil {
@@ -258,4 +214,168 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// setupBrevo runs the Brevo domain-registration, DNS, authentication, and
+// sender-creation steps (progress steps 5–8).
+func setupBrevo(p *ui.ProgressRunner, cf *cloudflare.Client, bv *brevo.Client, zoneID, domain string, aliases []string) {
+	p.Start(5)
+	brevoDomain, err := bv.AddDomain(domain)
+	if err != nil {
+		p.Warn(5, "failed — receiving still works")
+		p.SubRow(5, ui.Dim.Render(err.Error()))
+		p.Start(6)
+		p.Warn(6, "skipped")
+		p.Start(7)
+		p.Warn(7, "skipped")
+		p.Start(8)
+		p.Warn(8, "skipped")
+		return
+	}
+	p.Done(5, "")
+
+	// Step 6: Add DNS records to Cloudflare
+	p.Start(6)
+	for _, rec := range brevoDomain.FlatDNSRecords() {
+		name := brevo.FullRecordName(rec, domain)
+		cfRec := cloudflare.DNSRecord{
+			Type:    rec.Type,
+			Name:    name,
+			Content: rec.Value,
+			TTL:     3600,
+		}
+		if err := cf.CreateDNSRecord(zoneID, cfRec); err != nil {
+			p.SubRow(6, ui.IconWarn+" "+ui.Dim.Render(rec.Type+" "+name+" — "+err.Error()))
+		} else {
+			p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
+		}
+	}
+	p.Done(6, "")
+
+	// Step 7: Authenticate domain
+	p.Start(7)
+	time.Sleep(2 * time.Second)
+	if err := bv.AuthenticateDomain(domain); err != nil {
+		p.Warn(7, "pending — DNS may need time to propagate")
+	} else {
+		p.Done(7, "")
+	}
+
+	// Step 8: Create senders for each alias
+	p.Start(8)
+	for _, alias := range aliases {
+		addr := fmt.Sprintf("%s@%s", alias, domain)
+		name := strings.ToUpper(alias[:1]) + alias[1:]
+		if err := bv.CreateSender(name, addr); err != nil {
+			p.SubRow(8, ui.IconWarn+" "+ui.Dim.Render(addr+" — "+err.Error()))
+		} else {
+			p.SubRow(8, ui.IconSuccess+" "+ui.Dim.Render(addr))
+		}
+	}
+	p.Done(8, "")
+}
+
+// setupResend runs the Resend domain-registration, DNS, and verification steps
+// (progress steps 5–7). Resend has no explicit sender objects — any address on
+// a verified domain can send — so step 8 is a no-op. The created domain's ID is
+// written back through domainID for persistence.
+func setupResend(p *ui.ProgressRunner, cf *cloudflare.Client, rc *resend.Client, zoneID, domain string, domainID *string) {
+	p.Start(5)
+	rd, err := rc.AddDomain(domain)
+	if err != nil {
+		p.Warn(5, "failed — receiving still works")
+		p.SubRow(5, ui.Dim.Render(err.Error()))
+		p.Start(6)
+		p.Warn(6, "skipped")
+		p.Start(7)
+		p.Warn(7, "skipped")
+		p.Start(8)
+		p.Done(8, ui.Dim.Render("n/a for Resend"))
+		return
+	}
+	*domainID = rd.ID
+	p.Done(5, ui.Dim.Render(rd.ID))
+
+	// Step 6: Add DNS records to Cloudflare
+	p.Start(6)
+	for _, rec := range rd.Records {
+		name := resendRecordName(rec.Name, domain)
+		cfRec := cloudflare.DNSRecord{
+			Type:    rec.Type,
+			Name:    name,
+			Content: rec.Value,
+			TTL:     3600,
+		}
+		if strings.EqualFold(rec.Type, "MX") && rec.Priority > 0 {
+			prio := rec.Priority
+			cfRec.Priority = &prio
+		}
+		if err := cf.CreateDNSRecord(zoneID, cfRec); err != nil {
+			p.SubRow(6, ui.IconWarn+" "+ui.Dim.Render(rec.Type+" "+name+" — "+err.Error()))
+		} else {
+			p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
+		}
+	}
+	p.Done(6, "")
+
+	// Step 7: Trigger verification
+	p.Start(7)
+	time.Sleep(2 * time.Second)
+	if err := rc.VerifyDomain(rd.ID); err != nil {
+		p.Warn(7, "pending — DNS may need time to propagate")
+	} else {
+		p.Done(7, "")
+	}
+
+	// Step 8: no per-sender registration needed for Resend
+	p.Start(8)
+	p.Done(8, ui.Dim.Render("n/a for Resend"))
+}
+
+// resendRecordName normalizes a Resend DNS record name into a fully-qualified
+// name for Cloudflare. Resend returns host-relative names (e.g. "send",
+// "resend._domainkey"), but occasionally the FQDN; handle both.
+func resendRecordName(name, domain string) string {
+	name = strings.TrimSuffix(name, ".")
+	if name == "" || name == "@" {
+		return domain
+	}
+	if name == domain || strings.HasSuffix(name, "."+domain) {
+		return name
+	}
+	return name + "." + domain
+}
+
+// successPanel renders the post-setup instructions, tailored to the provider.
+func successPanel(provider, domain string, cfg *internal.Config) string {
+	if provider == internal.ProviderResend {
+		return ui.SuccessPanel.Render(
+			ui.Success.Bold(true).Render(domain+" is set up!") + "\n\n" +
+				ui.Dim.Render("Sending is handled through Resend's API.") + "\n" +
+				ui.Dim.Render("Once DNS propagates, the domain verifies automatically —") + "\n" +
+				ui.Dim.Render("check status with ") + ui.Highlight.Render("mailctl check "+domain) + "\n\n" +
+				ui.Dim.Render("Send from any address on this domain via flows:") + "\n" +
+				ui.Highlight.Render("  mailctl flow run welcome:send you@example.com") + "\n\n" +
+				ui.Dim.Render("To send from Gmail, use Resend SMTP in ") +
+				ui.Highlight.Render("Gmail > Settings > Accounts") + "\n" +
+				ui.KeyValue("Server", "smtp.resend.com") + "\n" +
+				ui.KeyValue("Port", "587") + "\n" +
+				ui.KeyValue("Username", "resend") + "\n" +
+				ui.KeyValue("Password", ui.Dim.Render("your Resend API key")) + "\n" +
+				ui.KeyValue("Security", "TLS"),
+		)
+	}
+	return ui.SuccessPanel.Render(
+		ui.Success.Bold(true).Render(domain+" is set up!") + "\n\n" +
+			ui.Dim.Render("To send from Gmail:") + "\n" +
+			ui.Dim.Render("1. Open ") + ui.Highlight.Render("https://mail.google.com/mail/#settings/accounts") + "\n" +
+			ui.Dim.Render("2. Click 'Add another email address'") + "\n" +
+			ui.Dim.Render("3. Uncheck 'Treat as an alias', use these SMTP settings:") + "\n\n" +
+			ui.KeyValue("Server", "smtp-relay.brevo.com") + "\n" +
+			ui.KeyValue("Port", "587") + "\n" +
+			ui.KeyValue("Username", cfg.BrevoSMTPLogin) + "\n" +
+			ui.KeyValue("Password", cfg.BrevoSMTPKey) + "\n" +
+			ui.KeyValue("Security", "TLS") + "\n\n" +
+			ui.Dim.Render("4. Enter the verification code from your inbox"),
+	)
 }

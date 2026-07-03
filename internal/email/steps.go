@@ -7,10 +7,20 @@ import (
 	"github.com/sislelabs/mailctl/internal/ui"
 )
 
-func RegisterSteps(smtpCfgProvider func() *SMTPConfig) {
+// Sender abstracts how a fully-built Message is delivered, so flows can send
+// via SMTP (Brevo) or the Resend HTTP API without knowing which.
+type Sender func(msg *Message) error
+
+// RegisterSteps wires up the email.send flow step.
+//
+// senderProvider returns the active provider-specific sender (e.g. Resend's
+// HTTP API), or nil when no provider-specific sender applies. When it returns
+// nil, we fall back to SMTP using smtpCfgProvider.
+func RegisterSteps(smtpCfgProvider func() *SMTPConfig, senderProvider func() Sender) {
 	flow.RegisterStep("email.send", func(ctx *flow.StepContext, args map[string]interface{}) (interface{}, error) {
+		sender := senderProvider()
 		smtpCfg := smtpCfgProvider()
-		if smtpCfg == nil {
+		if sender == nil && smtpCfg == nil {
 			msg := ui.Error.Bold(true).Render("SMTP not configured.") + "\n\n" +
 				"Add the following to " + ui.Accent.Render("~/.mailctl.yaml") + ":\n\n" +
 				ui.Dim.Render("  smtp:\n    host: \"smtp.example.com\"\n    port: 587\n    username: \"you@example.com\"\n    password: \"your-password\"\n    default_from: \"you@example.com\"")
@@ -79,6 +89,9 @@ func RegisterSteps(smtpCfgProvider func() *SMTPConfig) {
 			return nil, nil
 		}
 
+		if sender != nil {
+			return nil, sender(msg)
+		}
 		return nil, Send(smtpCfg, msg)
 	})
 }

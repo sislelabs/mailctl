@@ -7,6 +7,7 @@ import (
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
 	"github.com/sislelabs/mailctl/internal/brevo"
+	"github.com/sislelabs/mailctl/internal/resend"
 	"github.com/sislelabs/mailctl/internal/ui"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -22,14 +23,15 @@ type DetailModel struct {
 }
 
 type detailData struct {
-	cfEnabled    *bool
-	cfError      string
-	rules        []ruleInfo
-	rulesError   string
-	brevoAuthenticated *bool
-	brevoVerified      *bool
-	brevoError         string
-	brevoDNS           []brevo.DNSRecord
+	cfEnabled  *bool
+	cfError    string
+	rules      []ruleInfo
+	rulesError string
+	// Sending-provider status, populated from Brevo or Resend.
+	sendProvider string // "Brevo" or "Resend"
+	sendError    string
+	sendState    string // "authenticated" | "verified" | "pending" | ""
+	sendDNS      []dnsRecordInfo
 	dnsRecords   []dnsRecordInfo
 	mxRecords    []mxRecordInfo
 	mxError      string
@@ -80,7 +82,6 @@ func (m DetailModel) fetch() tea.Cmd {
 		}
 
 		cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
-		bv := brevo.NewClient(cfg.BrevoAPIKey)
 		data := &detailData{}
 
 		// CF routing status — if rules exist, routing works even if status check fails
@@ -126,14 +127,63 @@ func (m DetailModel) fetch() tea.Cmd {
 			}
 		}
 
-		// Brevo domain
-		bDomain, err := bv.GetDomain(d.Domain)
-		if err != nil {
-			data.brevoError = err.Error()
+		// Sending domain status (provider-specific)
+		if cfg.SendingProvider() == internal.ProviderResend {
+			data.sendProvider = "Resend"
+			rc := resend.NewClient(cfg.ResendAPIKey)
+			var rd *resend.Domain
+			var rerr error
+			if d.ResendDomainID != "" {
+				rd, rerr = rc.GetDomain(d.ResendDomainID)
+			} else {
+				rd, rerr = rc.FindDomainByName(d.Domain)
+			}
+			if rerr != nil || rd == nil {
+				data.sendError = "not configured in Resend"
+			} else {
+				if rd.Authenticated() {
+					data.sendState = "authenticated"
+				} else {
+					data.sendState = "pending"
+				}
+				for _, rec := range rd.Records {
+					state := "pending"
+					if strings.EqualFold(rec.Status, "verified") {
+						state = "verified"
+					}
+					data.sendDNS = append(data.sendDNS, dnsRecordInfo{
+						recType: rec.Type,
+						name:    resendRecordNameTUI(rec.Name, d.Domain),
+						status:  state,
+					})
+				}
+			}
 		} else {
-			data.brevoAuthenticated = &bDomain.Authenticated
-			data.brevoVerified = &bDomain.Verified
-			data.brevoDNS = bDomain.FlatDNSRecords()
+			data.sendProvider = "Brevo"
+			bv := brevo.NewClient(cfg.BrevoAPIKey)
+			bDomain, err := bv.GetDomain(d.Domain)
+			if err != nil {
+				data.sendError = err.Error()
+			} else {
+				if bDomain.Authenticated {
+					data.sendState = "authenticated"
+				} else if bDomain.Verified {
+					data.sendState = "verified"
+				} else {
+					data.sendState = "pending"
+				}
+				for _, rec := range bDomain.FlatDNSRecords() {
+					state := "pending"
+					if rec.Status {
+						state = "verified"
+					}
+					data.sendDNS = append(data.sendDNS, dnsRecordInfo{
+						recType: rec.Type,
+						name:    brevo.FullRecordName(rec, d.Domain),
+						status:  state,
+					})
+				}
+			}
 		}
 
 		// MX records
@@ -229,33 +279,35 @@ func (m DetailModel) View() string {
 		sections = append(sections, renderSection("Routing Rules", rows))
 	}
 
-	// ── Brevo ────
+	// ── Sending provider ────
 	{
+		providerName := m.data.sendProvider
+		if providerName == "" {
+			providerName = "Sending"
+		}
 		var rows []string
-		if m.data.brevoError != "" {
-			rows = append(rows, ui.IconWarn+" "+ui.Dim.Render("Not configured in Brevo"))
-		} else if m.data.brevoAuthenticated != nil {
-			if *m.data.brevoAuthenticated {
+		if m.data.sendError != "" {
+			rows = append(rows, ui.IconWarn+" "+ui.Dim.Render("Not configured in "+providerName))
+		} else if m.data.sendState != "" {
+			switch m.data.sendState {
+			case "authenticated":
 				rows = append(rows, ui.IconSuccess+" "+ui.Success.Render("Authenticated")+" "+ui.Dim.Render("— sending ready"))
-			} else if m.data.brevoVerified != nil && *m.data.brevoVerified {
+			case "verified":
 				rows = append(rows, ui.IconPending+" "+ui.Info.Render("Verified")+" "+ui.Dim.Render("— DKIM pending"))
-			} else {
+			default:
 				rows = append(rows, ui.IconPending+" "+ui.Info.Render("Pending")+" "+ui.Dim.Render("— waiting for DNS"))
 			}
-			for _, rec := range m.data.brevoDNS {
+			for _, rec := range m.data.sendDNS {
 				icon := ui.IconPending
-				statusText := "pending"
-				if rec.Status {
+				if rec.status == "verified" {
 					icon = ui.IconSuccess
-					statusText = "verified"
 				}
-				name := brevo.FullRecordName(rec, m.domain)
-				rows = append(rows, "  "+icon+" "+ui.Dim.Render(rec.Type)+" "+ui.White.Render(name)+" "+ui.Dim.Render(statusText))
+				rows = append(rows, "  "+icon+" "+ui.Dim.Render(rec.recType)+" "+ui.White.Render(rec.name)+" "+ui.Dim.Render(rec.status))
 			}
 		} else {
 			rows = append(rows, ui.IconWarn+" "+ui.Dim.Render("Not configured"))
 		}
-		sections = append(sections, renderSection("Brevo", rows))
+		sections = append(sections, renderSection(providerName, rows))
 	}
 
 	// ── MX Records ────

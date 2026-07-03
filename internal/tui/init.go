@@ -29,19 +29,29 @@ var initFields = []initField{
 		placeholder: "abc123...",
 	},
 	{
+		label:       "Sending provider",
+		help:        "Which service sends email: 'brevo' or 'resend'. Leave blank for brevo.",
+		placeholder: "brevo",
+	},
+	{
 		label:       "Brevo API Key",
-		help:        "https://app.brevo.com/settings/keys/api — for domain management",
+		help:        "https://app.brevo.com/settings/keys/api — for domain management (skip if using Resend)",
 		placeholder: "xkeysib-...",
 	},
 	{
 		label:       "Brevo SMTP Key",
-		help:        "https://app.brevo.com/settings/keys/smtp — for sending email",
+		help:        "https://app.brevo.com/settings/keys/smtp — for sending email (skip if using Resend)",
 		placeholder: "xsmtpsib-...",
 	},
 	{
 		label:       "Brevo SMTP Login",
-		help:        "Shown on the SMTP settings page, e.g. xxx@smtp-brevo.com",
+		help:        "Shown on the SMTP settings page, e.g. xxx@smtp-brevo.com (skip if using Resend)",
 		placeholder: "xxx@smtp-brevo.com",
+	},
+	{
+		label:       "Resend API Key",
+		help:        "https://resend.com/api-keys — for domain management and sending (skip if using Brevo)",
+		placeholder: "re_...",
 	},
 	{
 		label:       "Default forward-to email",
@@ -106,13 +116,19 @@ func (m InitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m InitModel) saveConfig() tea.Cmd {
 	return func() tea.Msg {
+		provider := strings.ToLower(strings.TrimSpace(m.inputs[2].Value()))
+		if provider != internal.ProviderResend {
+			provider = internal.ProviderBrevo
+		}
 		cfg := &internal.Config{
 			CloudflareAPIToken:  strings.TrimSpace(m.inputs[0].Value()),
 			CloudflareAccountID: strings.TrimSpace(m.inputs[1].Value()),
-			BrevoAPIKey:         strings.TrimSpace(m.inputs[2].Value()),
-			BrevoSMTPKey:        strings.TrimSpace(m.inputs[3].Value()),
-			BrevoSMTPLogin:      strings.TrimSpace(m.inputs[4].Value()),
-			DefaultForwardTo:    strings.TrimSpace(m.inputs[5].Value()),
+			Provider:            provider,
+			BrevoAPIKey:         strings.TrimSpace(m.inputs[3].Value()),
+			BrevoSMTPKey:        strings.TrimSpace(m.inputs[4].Value()),
+			BrevoSMTPLogin:      strings.TrimSpace(m.inputs[5].Value()),
+			ResendAPIKey:        strings.TrimSpace(m.inputs[6].Value()),
+			DefaultForwardTo:    strings.TrimSpace(m.inputs[7].Value()),
 		}
 		if err := internal.SaveConfig(cfg); err != nil {
 			return StatusMsg{Text: "Error: " + err.Error()}

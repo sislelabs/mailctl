@@ -7,6 +7,7 @@ import (
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
 	"github.com/sislelabs/mailctl/internal/brevo"
+	"github.com/sislelabs/mailctl/internal/resend"
 	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -73,7 +74,14 @@ func (m ListModel) fetchStatuses() tea.Cmd {
 	cfg := m.cfg
 	return func() tea.Msg {
 		cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
-		bv := brevo.NewClient(cfg.BrevoAPIKey)
+		useResend := cfg.SendingProvider() == internal.ProviderResend
+		var bv *brevo.Client
+		var rc *resend.Client
+		if useResend {
+			rc = resend.NewClient(cfg.ResendAPIKey)
+		} else {
+			bv = brevo.NewClient(cfg.BrevoAPIKey)
+		}
 
 		var rows []domainRow
 		for _, d := range cfg.Domains {
@@ -93,7 +101,24 @@ func (m ListModel) fetchStatuses() tea.Cmd {
 
 			row.brevoIcon = ui.Dim.Render("·")
 			row.brevoStatus = ui.Dim.Render("n/a")
-			if bDomain, err := bv.GetDomain(d.Domain); err == nil {
+			if useResend {
+				var rd *resend.Domain
+				var err error
+				if d.ResendDomainID != "" {
+					rd, err = rc.GetDomain(d.ResendDomainID)
+				} else {
+					rd, err = rc.FindDomainByName(d.Domain)
+				}
+				if err == nil && rd != nil {
+					if rd.Authenticated() {
+						row.brevoIcon = ui.IconSuccess
+						row.brevoStatus = ui.Success.Render("verified")
+					} else {
+						row.brevoIcon = ui.IconPending
+						row.brevoStatus = ui.Info.Render("pending")
+					}
+				}
+			} else if bDomain, err := bv.GetDomain(d.Domain); err == nil {
 				if bDomain.Authenticated {
 					row.brevoIcon = ui.IconSuccess
 					row.brevoStatus = ui.Success.Render("authenticated")
