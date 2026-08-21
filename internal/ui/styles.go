@@ -9,18 +9,18 @@ import (
 // ── Color Palette (OpenCode-inspired, warm minimal) ─────────────────────────
 
 var (
-	ColorAccent  = lipgloss.Color("#fab283") // warm peach/orange — primary accent
-	ColorGreen   = lipgloss.Color("#7fd88f")
-	ColorRed     = lipgloss.Color("#e06c75")
-	ColorYellow  = lipgloss.Color("#f5a742")
-	ColorBlue    = lipgloss.Color("#56b6c2")
-	ColorPurple  = lipgloss.Color("#9d7cd8")
-	ColorDim     = lipgloss.Color("#555555")
-	ColorMuted   = lipgloss.Color("#808080")
-	ColorWhite   = lipgloss.Color("#eeeeee")
-	ColorBorder  = lipgloss.Color("#2a2a2a")
-	ColorPanel   = lipgloss.Color("#141414")
-	ColorBg      = lipgloss.Color("#0a0a0a")
+	ColorAccent = lipgloss.Color("#fab283") // warm peach/orange — primary accent
+	ColorGreen  = lipgloss.Color("#7fd88f")
+	ColorRed    = lipgloss.Color("#e06c75")
+	ColorYellow = lipgloss.Color("#f5a742")
+	ColorBlue   = lipgloss.Color("#56b6c2")
+	ColorPurple = lipgloss.Color("#9d7cd8")
+	ColorDim    = lipgloss.Color("#555555")
+	ColorMuted  = lipgloss.Color("#808080")
+	ColorWhite  = lipgloss.Color("#eeeeee")
+	ColorBorder = lipgloss.Color("#2a2a2a")
+	ColorPanel  = lipgloss.Color("#141414")
+	ColorBg     = lipgloss.Color("#0a0a0a")
 )
 
 // ── Status Icons ────────────────────────────────────────────────────────────
@@ -179,4 +179,11 @@ func MaskEmail(email string) string {
 		return local + "***" + domain
 	}
 	return string(local[0]) + "***" + domain
+}
+
+// Heading renders a section title for standalone printing. SectionTitle carries
+// a top margin for use inside panels, which renders as a stray padded line when
+// printed on its own.
+func Heading(s string) string {
+	return SectionTitle.MarginTop(0).Render(s)
 }
