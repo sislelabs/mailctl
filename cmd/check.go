@@ -15,7 +15,7 @@ import (
 
 var checkCmd = &cobra.Command{
 	Use:   "check [domain]",
-	Short: "Deep health check for DNS, routing, and Brevo status",
+	Short: "Deep health check for DNS, routing, and sending-provider status",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runCheck,
 }
