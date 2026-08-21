@@ -244,10 +244,21 @@ func (c *Client) ListDNSRecords(zoneID, recordType string) ([]DNSRecord, error) 
 	return records, nil
 }
 
-// CreateDNSRecord creates a DNS record.
-func (c *Client) CreateDNSRecord(zoneID string, record DNSRecord) error {
-	_, err := c.do("POST", fmt.Sprintf("/zones/%s/dns_records", zoneID), record)
-	return err
+// CreateDNSRecord creates a DNS record and returns its Cloudflare record ID.
+// The ID lets callers record exactly which records they created, so teardown
+// can delete only those rather than guessing from record names.
+func (c *Client) CreateDNSRecord(zoneID string, record DNSRecord) (string, error) {
+	resp, err := c.do("POST", fmt.Sprintf("/zones/%s/dns_records", zoneID), record)
+	if err != nil {
+		return "", err
+	}
+
+	var created DNSRecord
+	if err := json.Unmarshal(resp.Result, &created); err != nil {
+		// The record exists; we just could not read its ID back.
+		return "", nil
+	}
+	return created.ID, nil
 }
 
 // DeleteDNSRecord deletes a DNS record.

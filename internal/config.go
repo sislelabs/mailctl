@@ -23,6 +23,11 @@ type DomainConfig struct {
 	// addresses domains by ID rather than name, so we persist it here for
 	// later check/remove operations. Empty for Brevo-managed domains.
 	ResendDomainID string `yaml:"resend_domain_id,omitempty"`
+	// ManagedDNSRecordIDs are the Cloudflare record IDs mailctl itself created
+	// for this domain. Teardown deletes exactly these, so DKIM and DMARC
+	// records belonging to other mail services on the same zone are never
+	// touched. Empty for domains added before mailctl tracked ownership.
+	ManagedDNSRecordIDs []string `yaml:"managed_dns_record_ids,omitempty"`
 }
 
 type SMTPConfig struct {

@@ -8,6 +8,7 @@ import (
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/brevo"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
+	"github.com/sislelabs/mailctl/internal/mailsetup"
 	"github.com/sislelabs/mailctl/internal/resend"
 	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/spf13/cobra"
@@ -15,7 +16,7 @@ import (
 
 var addCmd = &cobra.Command{
 	Use:   "add [domain]",
-	Short: "Set up email for a domain (Cloudflare routing + Brevo sending)",
+	Short: "Set up email for a domain (Cloudflare routing + Resend or Brevo sending)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runAdd,
 }
@@ -32,6 +33,12 @@ func init() {
 
 func runAdd(cmd *cobra.Command, args []string) error {
 	domain := args[0]
+
+	// Catch a non-domain locally rather than after a round-trip to Cloudflare,
+	// where it surfaces as a confusing "zone not found".
+	if !mailsetup.LooksLikeDomain(domain) {
+		return fmt.Errorf("%q is not a domain name — pass the registered domain, e.g. %s.com", domain, domain)
+	}
 
 	cfg, err := internal.LoadConfig()
 	if err != nil {
@@ -82,6 +89,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	var zoneID string
 	var cfAliases []internal.Alias
 	var resendDomainID string
+	var managedRecordIDs []string
 	var afterOutput string
 
 	err = ui.RunProgress("Setting up "+ui.Highlight.Render(domain), stepLabels, func(p *ui.ProgressRunner) {
@@ -185,9 +193,9 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		// DNS records to Cloudflare, trigger authentication, and (Brevo only)
 		// create senders. Receiving already works regardless of the outcome.
 		if provider == internal.ProviderResend {
-			setupResend(p, cf, rc, zone.ID, domain, &resendDomainID)
+			setupResend(p, cf, rc, zone.ID, domain, forwardTo, &resendDomainID, &managedRecordIDs)
 		} else {
-			setupBrevo(p, cf, bv, zone.ID, domain, aliases)
+			setupBrevo(p, cf, bv, zone.ID, domain, forwardTo, aliases, &managedRecordIDs)
 		}
 
 		// Step 9: Save config
@@ -195,6 +203,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		cfg.AddDomain(domain, zoneID, cfAliases)
 		if d := cfg.FindDomain(domain); d != nil {
 			d.ResendDomainID = resendDomainID
+			d.ManagedDNSRecordIDs = managedRecordIDs
 		}
 		if err := internal.SaveConfig(cfg); err != nil {
 			p.Fail(9, err.Error())
@@ -217,8 +226,10 @@ func runAdd(cmd *cobra.Command, args []string) error {
 }
 
 // setupBrevo runs the Brevo domain-registration, DNS, authentication, and
-// sender-creation steps (progress steps 5–8).
-func setupBrevo(p *ui.ProgressRunner, cf *cloudflare.Client, bv *brevo.Client, zoneID, domain string, aliases []string) {
+// sender-creation steps (progress steps 5–8). Cloudflare record IDs for every
+// record it creates are appended to managed so teardown can delete exactly
+// those and nothing else.
+func setupBrevo(p *ui.ProgressRunner, cf *cloudflare.Client, bv *brevo.Client, zoneID, domain, forwardTo string, aliases []string, managed *[]string) {
 	p.Start(5)
 	brevoDomain, err := bv.AddDomain(domain)
 	if err != nil {
@@ -244,12 +255,15 @@ func setupBrevo(p *ui.ProgressRunner, cf *cloudflare.Client, bv *brevo.Client, z
 			Content: rec.Value,
 			TTL:     3600,
 		}
-		if err := cf.CreateDNSRecord(zoneID, cfRec); err != nil {
+		id, err := cf.CreateDNSRecord(zoneID, cfRec)
+		if err != nil {
 			p.SubRow(6, ui.IconWarn+" "+ui.Dim.Render(rec.Type+" "+name+" — "+err.Error()))
-		} else {
-			p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
+			continue
 		}
+		recordManaged(managed, id)
+		p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
 	}
+	addDMARC(p, cf, zoneID, domain, forwardTo, managed)
 	p.Done(6, "")
 
 	// Step 7: Authenticate domain
@@ -278,8 +292,9 @@ func setupBrevo(p *ui.ProgressRunner, cf *cloudflare.Client, bv *brevo.Client, z
 // setupResend runs the Resend domain-registration, DNS, and verification steps
 // (progress steps 5–7). Resend has no explicit sender objects — any address on
 // a verified domain can send — so step 8 is a no-op. The created domain's ID is
-// written back through domainID for persistence.
-func setupResend(p *ui.ProgressRunner, cf *cloudflare.Client, rc *resend.Client, zoneID, domain string, domainID *string) {
+// written back through domainID, and every Cloudflare record ID created is
+// appended to managed for later teardown.
+func setupResend(p *ui.ProgressRunner, cf *cloudflare.Client, rc *resend.Client, zoneID, domain, forwardTo string, domainID *string, managed *[]string) {
 	p.Start(5)
 	rd, err := rc.AddDomain(domain)
 	if err != nil {
@@ -310,12 +325,15 @@ func setupResend(p *ui.ProgressRunner, cf *cloudflare.Client, rc *resend.Client,
 			prio := rec.Priority
 			cfRec.Priority = &prio
 		}
-		if err := cf.CreateDNSRecord(zoneID, cfRec); err != nil {
+		id, err := cf.CreateDNSRecord(zoneID, cfRec)
+		if err != nil {
 			p.SubRow(6, ui.IconWarn+" "+ui.Dim.Render(rec.Type+" "+name+" — "+err.Error()))
-		} else {
-			p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
+			continue
 		}
+		recordManaged(managed, id)
+		p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
 	}
+	addDMARC(p, cf, zoneID, domain, forwardTo, managed)
 	p.Done(6, "")
 
 	// Step 7: Trigger verification
@@ -330,6 +348,33 @@ func setupResend(p *ui.ProgressRunner, cf *cloudflare.Client, rc *resend.Client,
 	// Step 8: no per-sender registration needed for Resend
 	p.Start(8)
 	p.Done(8, ui.Dim.Render("n/a for Resend"))
+}
+
+// addDMARC publishes a starter DMARC policy as part of the DNS step. SPF and
+// DKIM alone prove a message is authentic; without a DMARC record many
+// receivers have no published policy to evaluate them against, which is the
+// usual reason correctly-authenticated mail still lands in spam.
+func addDMARC(p *ui.ProgressRunner, cf *cloudflare.Client, zoneID, domain, forwardTo string, managed *[]string) {
+	id, status, detail := mailsetup.EnsureDMARC(cf, zoneID, domain, forwardTo)
+	name := mailsetup.DMARCName(domain)
+	switch status {
+	case mailsetup.DMARCCreated:
+		recordManaged(managed, id)
+		p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render("TXT "+name+" — "+detail))
+	case mailsetup.DMARCExists:
+		p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render("TXT "+name+" — already set, left as is"))
+	case mailsetup.DMARCFailed:
+		p.SubRow(6, ui.IconWarn+" "+ui.Dim.Render("TXT "+name+" — "+detail))
+	}
+}
+
+// recordManaged appends a Cloudflare record ID to the managed set, ignoring
+// empty IDs from creates whose response could not be parsed.
+func recordManaged(managed *[]string, id string) {
+	if id == "" || managed == nil {
+		return
+	}
+	*managed = append(*managed, id)
 }
 
 // resendRecordName normalizes a Resend DNS record name into a fully-qualified

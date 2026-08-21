@@ -5,15 +5,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sislelabs/mailctl/internal"
-	"github.com/sislelabs/mailctl/internal/cloudflare"
-	"github.com/sislelabs/mailctl/internal/brevo"
-	"github.com/sislelabs/mailctl/internal/resend"
-	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/sislelabs/mailctl/internal"
+	"github.com/sislelabs/mailctl/internal/brevo"
+	"github.com/sislelabs/mailctl/internal/cloudflare"
+	"github.com/sislelabs/mailctl/internal/mailsetup"
+	"github.com/sislelabs/mailctl/internal/resend"
+	"github.com/sislelabs/mailctl/internal/ui"
 )
 
 type addPhase int
@@ -43,10 +44,10 @@ type addStep struct {
 }
 
 type addProgressMsg struct {
-	step    int
-	status  int
-	detail  string
-	subRow  string
+	step   int
+	status int
+	detail string
+	subRow string
 }
 
 type addDoneMsg struct {
@@ -72,9 +73,9 @@ func NewAddDomainModel(cfg *internal.Config) AddDomainModel {
 	s.Style = lipgloss.NewStyle().Foreground(ui.ColorAccent)
 
 	return AddDomainModel{
-		cfg:    cfg,
-		inputs: []textinput.Model{domainInput, aliasInput},
-		phase:  addPhaseInput,
+		cfg:     cfg,
+		inputs:  []textinput.Model{domainInput, aliasInput},
+		phase:   addPhaseInput,
 		spinner: s,
 	}
 }
@@ -213,6 +214,7 @@ func runAddDomain(cfg *internal.Config, domain, aliasStr string) tea.Msg {
 	provider := cfg.SendingProvider()
 	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
 	var resendDomainID string
+	var managedRecordIDs []string
 
 	// Step 0: Find zone
 	p(0, 1, "")
@@ -282,9 +284,9 @@ func runAddDomain(cfg *internal.Config, domain, aliasStr string) tea.Msg {
 
 	// Steps 4–7: register the domain with the sending provider.
 	if provider == internal.ProviderResend {
-		resendDomainID = addResendTUI(cf, resend.NewClient(cfg.ResendAPIKey), zone.ID, domain, p, sub)
+		resendDomainID = addResendTUI(cf, resend.NewClient(cfg.ResendAPIKey), zone.ID, domain, forwardTo, p, sub, &managedRecordIDs)
 	} else {
-		addBrevoTUI(cf, brevo.NewClient(cfg.BrevoAPIKey), zone.ID, domain, aliases, p, sub)
+		addBrevoTUI(cf, brevo.NewClient(cfg.BrevoAPIKey), zone.ID, domain, forwardTo, aliases, p, sub, &managedRecordIDs)
 	}
 
 	// Step 8: Save
@@ -292,6 +294,7 @@ func runAddDomain(cfg *internal.Config, domain, aliasStr string) tea.Msg {
 	cfg.AddDomain(domain, zone.ID, cfAliases)
 	if d := cfg.FindDomain(domain); d != nil {
 		d.ResendDomainID = resendDomainID
+		d.ManagedDNSRecordIDs = managedRecordIDs
 	}
 	if err := internal.SaveConfig(cfg); err != nil {
 		p(8, 4, err.Error())
@@ -303,7 +306,7 @@ func runAddDomain(cfg *internal.Config, domain, aliasStr string) tea.Msg {
 }
 
 // addBrevoTUI runs the Brevo registration/DNS/auth/sender steps (4–7).
-func addBrevoTUI(cf *cloudflare.Client, bv *brevo.Client, zoneID, domain string, aliases []string, p func(int, int, string), sub func(int, string)) {
+func addBrevoTUI(cf *cloudflare.Client, bv *brevo.Client, zoneID, domain, forwardTo string, aliases []string, p func(int, int, string), sub func(int, string), managed *[]string) {
 	p(4, 1, "")
 	brevoDomain, err := bv.AddDomain(domain)
 	if err != nil {
@@ -321,12 +324,15 @@ func addBrevoTUI(cf *cloudflare.Client, bv *brevo.Client, zoneID, domain string,
 	for _, rec := range brevoDomain.FlatDNSRecords() {
 		name := brevo.FullRecordName(rec, domain)
 		cfRec := cloudflare.DNSRecord{Type: rec.Type, Name: name, Content: rec.Value, TTL: 3600}
-		if err := cf.CreateDNSRecord(zoneID, cfRec); err != nil {
+		id, err := cf.CreateDNSRecord(zoneID, cfRec)
+		if err != nil {
 			sub(5, ui.IconWarn+" "+ui.Dim.Render(rec.Type+" "+name+" — "+err.Error()))
-		} else {
-			sub(5, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
+			continue
 		}
+		recordManagedTUI(managed, id)
+		sub(5, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
 	}
+	addDMARCTUI(cf, zoneID, domain, forwardTo, sub, managed)
 	p(5, 2, "")
 
 	// Step 6: Authenticate
@@ -355,7 +361,7 @@ func addBrevoTUI(cf *cloudflare.Client, bv *brevo.Client, zoneID, domain string,
 // addResendTUI runs the Resend registration/DNS/verify steps (4–7) and returns
 // the created domain's Resend ID (empty on failure). Resend has no per-sender
 // objects, so step 7 is a no-op.
-func addResendTUI(cf *cloudflare.Client, rc *resend.Client, zoneID, domain string, p func(int, int, string), sub func(int, string)) string {
+func addResendTUI(cf *cloudflare.Client, rc *resend.Client, zoneID, domain, forwardTo string, p func(int, int, string), sub func(int, string), managed *[]string) string {
 	p(4, 1, "")
 	rd, err := rc.AddDomain(domain)
 	if err != nil {
@@ -377,12 +383,15 @@ func addResendTUI(cf *cloudflare.Client, rc *resend.Client, zoneID, domain strin
 			prio := rec.Priority
 			cfRec.Priority = &prio
 		}
-		if err := cf.CreateDNSRecord(zoneID, cfRec); err != nil {
+		id, err := cf.CreateDNSRecord(zoneID, cfRec)
+		if err != nil {
 			sub(5, ui.IconWarn+" "+ui.Dim.Render(rec.Type+" "+name+" — "+err.Error()))
-		} else {
-			sub(5, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
+			continue
 		}
+		recordManagedTUI(managed, id)
+		sub(5, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
 	}
+	addDMARCTUI(cf, zoneID, domain, forwardTo, sub, managed)
 	p(5, 2, "")
 
 	// Step 6: Verify
@@ -512,4 +521,31 @@ func (m AddDomainModel) View() string {
 	}
 
 	return b.String()
+}
+
+// addDMARCTUI publishes a starter DMARC policy as part of the DNS step, matching
+// what the CLI's add path does. Without a DMARC record, receivers have no
+// published policy to evaluate SPF and DKIM against, which is the usual reason
+// authenticated mail still lands in spam.
+func addDMARCTUI(cf *cloudflare.Client, zoneID, domain, forwardTo string, sub func(int, string), managed *[]string) {
+	id, status, detail := mailsetup.EnsureDMARC(cf, zoneID, domain, forwardTo)
+	name := mailsetup.DMARCName(domain)
+	switch status {
+	case mailsetup.DMARCCreated:
+		recordManagedTUI(managed, id)
+		sub(5, ui.IconSuccess+" "+ui.Dim.Render("TXT "+name+" — "+detail))
+	case mailsetup.DMARCExists:
+		sub(5, ui.IconSuccess+" "+ui.Dim.Render("TXT "+name+" — already set, left as is"))
+	case mailsetup.DMARCFailed:
+		sub(5, ui.IconWarn+" "+ui.Dim.Render("TXT "+name+" — "+detail))
+	}
+}
+
+// recordManagedTUI appends a Cloudflare record ID to the managed set so that
+// teardown deletes only records mailctl created.
+func recordManagedTUI(managed *[]string, id string) {
+	if id == "" || managed == nil {
+		return
+	}
+	*managed = append(*managed, id)
 }
