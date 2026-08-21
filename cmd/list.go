@@ -7,6 +7,7 @@ import (
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/brevo"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
+	"github.com/sislelabs/mailctl/internal/resend"
 	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -35,7 +36,14 @@ func runList(cmd *cobra.Command, args []string) error {
 	}
 
 	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
-	bv := brevo.NewClient(cfg.BrevoAPIKey)
+	useResend := cfg.SendingProvider() == internal.ProviderResend
+	var bv *brevo.Client
+	var rc *resend.Client
+	if useResend {
+		rc = resend.NewClient(cfg.ResendAPIKey)
+	} else {
+		bv = brevo.NewClient(cfg.BrevoAPIKey)
+	}
 
 	colDomain := 28
 	colCF := 16
@@ -61,14 +69,29 @@ func runList(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		brevoStatus := ui.Dim.Render("—")
-		if bDomain, err := bv.GetDomain(d.Domain); err == nil {
-			if bDomain.Authenticated {
-				brevoStatus = ui.IconSuccess + " " + ui.Success.Render("authenticated")
-			} else if bDomain.Verified {
-				brevoStatus = ui.IconPending + " " + ui.Info.Render("verified")
+		sendStatus := ui.Dim.Render("—")
+		if useResend {
+			var rd *resend.Domain
+			var err error
+			if d.ResendDomainID != "" {
+				rd, err = rc.GetDomain(d.ResendDomainID)
 			} else {
-				brevoStatus = ui.IconPending + " " + ui.Info.Render("pending")
+				rd, err = rc.FindDomainByName(d.Domain)
+			}
+			if err == nil && rd != nil {
+				if rd.Authenticated() {
+					sendStatus = ui.IconSuccess + " " + ui.Success.Render("verified")
+				} else {
+					sendStatus = ui.IconPending + " " + ui.Info.Render("pending")
+				}
+			}
+		} else if bDomain, err := bv.GetDomain(d.Domain); err == nil {
+			if bDomain.Authenticated {
+				sendStatus = ui.IconSuccess + " " + ui.Success.Render("authenticated")
+			} else if bDomain.Verified {
+				sendStatus = ui.IconPending + " " + ui.Info.Render("verified")
+			} else {
+				sendStatus = ui.IconPending + " " + ui.Info.Render("pending")
 			}
 		}
 
@@ -81,7 +104,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		row := lipgloss.JoinHorizontal(lipgloss.Top,
 			ui.White.Bold(true).Width(colDomain).Render(d.Domain),
 			lipgloss.NewStyle().Width(colCF).Render(cfStatus),
-			lipgloss.NewStyle().Width(colBrevo).Render(brevoStatus),
+			lipgloss.NewStyle().Width(colBrevo).Render(sendStatus),
 			lipgloss.NewStyle().Render(aliasStr),
 		)
 		rows = append(rows, row)
