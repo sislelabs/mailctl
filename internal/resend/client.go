@@ -199,9 +199,10 @@ func (c *Client) SendEmail(p SendParams) error {
 	if p.HTML != "" {
 		body["html"] = p.HTML
 	}
-	// Resend requires at least one of text/html.
+	// Resend requires at least one of text/html and rejects an empty string
+	// for both with a 422, so fail locally with a clearer message.
 	if p.Text == "" && p.HTML == "" {
-		body["text"] = ""
+		return fmt.Errorf("email must have a text or html body")
 	}
 	if len(p.Attachments) > 0 {
 		atts := make([]sendAttachment, 0, len(p.Attachments))

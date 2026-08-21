@@ -106,6 +106,30 @@ func TestSendEmailBody(t *testing.T) {
 	}
 }
 
+// Resend rejects a send with neither text nor html with a 422
+// ("Missing `html` or `text` field."), so we fail before the request.
+func TestSendEmailRequiresBody(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		io.WriteString(w, `{"id":"abc"}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv.URL)
+	err := c.SendEmail(SendParams{
+		From:    "hello@example.com",
+		To:      []string{"you@gmail.com"},
+		Subject: "Hi",
+	})
+	if err == nil {
+		t.Fatal("expected an error when both text and html are empty")
+	}
+	if called {
+		t.Error("expected no HTTP request when the body is empty")
+	}
+}
+
 func TestErrorStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(422)
