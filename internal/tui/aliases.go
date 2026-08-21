@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sislelabs/mailctl/internal"
-	"github.com/sislelabs/mailctl/internal/cloudflare"
-	"github.com/sislelabs/mailctl/internal/brevo"
-	"github.com/sislelabs/mailctl/internal/resend"
-	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sislelabs/mailctl/internal"
+	"github.com/sislelabs/mailctl/internal/brevo"
+	"github.com/sislelabs/mailctl/internal/cloudflare"
+	"github.com/sislelabs/mailctl/internal/mailsetup"
+	"github.com/sislelabs/mailctl/internal/resend"
+	"github.com/sislelabs/mailctl/internal/ui"
 )
 
 // ── Aliases List View ───────────────────────────────────────────────────────
@@ -300,6 +301,11 @@ func deleteDomain(cfg *internal.Config, domain string) tea.Msg {
 		}
 	}
 
+	// Disable the catch-all. It lives at its own API endpoint and never appears
+	// in the rules list, so deleting the per-alias rules alone would leave every
+	// address on the domain still forwarding.
+	mailsetup.DisableCatchAll(cf, d.CloudflareZoneID)
+
 	// Delete the sending-provider domain
 	if cfg.SendingProvider() == internal.ProviderResend {
 		rc := resend.NewClient(cfg.ResendAPIKey)
@@ -317,15 +323,11 @@ func deleteDomain(cfg *internal.Config, domain string) tea.Msg {
 		bv.DeleteDomain(domain)
 	}
 
-	// Delete DNS records
-	txtRecords, err := cf.ListDNSRecords(d.CloudflareZoneID, "TXT")
-	if err == nil {
-		for _, rec := range txtRecords {
-			if strings.Contains(rec.Name, "resend") || strings.Contains(rec.Content, "resend") || strings.Contains(rec.Content, "amazonses") || strings.Contains(rec.Name, "brevo") || strings.Contains(rec.Content, "brevo") || strings.Contains(rec.Name, "_domainkey") || strings.Contains(rec.Name, "_dmarc") {
-				cf.DeleteDNSRecord(d.CloudflareZoneID, rec.ID)
-			}
-		}
-	}
+	// Delete only the DNS records mailctl created. Domains added before record
+	// ownership was tracked have none recorded, and TeardownDNS leaves DNS
+	// alone rather than guessing from record names — guessing would take out
+	// DKIM keys belonging to other mail services on the same zone.
+	mailsetup.TeardownDNS(cf, d.CloudflareZoneID, d.ManagedDNSRecordIDs)
 
 	cfg.RemoveDomain(domain)
 	internal.SaveConfig(cfg)
@@ -341,12 +343,23 @@ func (m DeleteConfirmModel) View() string {
 		ui.Error.Bold(true).Render("Delete "+m.domain) + "\n\n" +
 			ui.Dim.Render("This will remove:") + "\n" +
 			ui.Dim.Render("  "+ui.IconDot+" Cloudflare routing rules") + "\n" +
+			ui.Dim.Render("  "+ui.IconDot+" Catch-all forwarding") + "\n" +
 			ui.Dim.Render("  "+ui.IconDot+" "+m.providerName()+" domain") + "\n" +
-			ui.Dim.Render("  "+ui.IconDot+" DNS records") + "\n" +
+			ui.Dim.Render("  "+ui.IconDot+" "+m.dnsScope()) + "\n" +
 			ui.Dim.Render("  "+ui.IconDot+" Config entry") + "\n\n" +
 			"Type " + ui.Error.Bold(true).Render(m.domain) + " to confirm:\n\n" +
 			m.input.View(),
 	)
 	b.WriteString("  " + box)
 	return b.String()
+}
+
+// dnsScope describes exactly which DNS records deletion will touch, so the
+// confirmation prompt cannot imply a broader sweep than actually happens.
+func (m DeleteConfirmModel) dnsScope() string {
+	d := m.cfg.FindDomain(m.domain)
+	if d == nil || len(d.ManagedDNSRecordIDs) == 0 {
+		return "No DNS records (none tracked)"
+	}
+	return fmt.Sprintf("%d DNS records created by mailctl", len(d.ManagedDNSRecordIDs))
 }
