@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sislelabs/mailctl/internal"
-	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/sislelabs/mailctl/internal"
+	"github.com/sislelabs/mailctl/internal/ui"
 )
 
 type initField struct {
@@ -20,7 +20,7 @@ type initField struct {
 var initFields = []initField{
 	{
 		label:       "Cloudflare API Token",
-		help:        "https://dash.cloudflare.com/profile/api-tokens — needs DNS Edit + Email Routing Edit",
+		help:        "https://dash.cloudflare.com/profile/api-tokens — needs Zone DNS + Zone Settings + Email Routing Rules Edit, Account Email Routing Addresses Edit",
 		placeholder: "cfut_...",
 	},
 	{
@@ -30,8 +30,13 @@ var initFields = []initField{
 	},
 	{
 		label:       "Sending provider",
-		help:        "Which service sends email: 'brevo' or 'resend'. Leave blank for brevo.",
-		placeholder: "brevo",
+		help:        "Which service sends email: 'resend' or 'brevo'. Leave blank for resend.",
+		placeholder: "resend",
+	},
+	{
+		label:       "Resend API Key",
+		help:        "https://resend.com/api-keys — for domain management and sending (skip if using Brevo)",
+		placeholder: "re_...",
 	},
 	{
 		label:       "Brevo API Key",
@@ -49,14 +54,14 @@ var initFields = []initField{
 		placeholder: "xxx@smtp-brevo.com",
 	},
 	{
-		label:       "Resend API Key",
-		help:        "https://resend.com/api-keys — for domain management and sending (skip if using Brevo)",
-		placeholder: "re_...",
-	},
-	{
 		label:       "Default forward-to email",
 		help:        "Your real email where custom domain mail gets forwarded",
 		placeholder: "you@gmail.com",
+	},
+	{
+		label:       "Default from address",
+		help:        "Address flows send as when they don't set one — without it 'flow run' fails",
+		placeholder: "hello@yourdomain.com",
 	},
 }
 
@@ -117,19 +122,29 @@ func (m InitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m InitModel) saveConfig() tea.Cmd {
 	return func() tea.Msg {
 		provider := strings.ToLower(strings.TrimSpace(m.inputs[2].Value()))
-		if provider != internal.ProviderResend {
-			provider = internal.ProviderBrevo
+		if provider != internal.ProviderBrevo {
+			provider = internal.ProviderResend
 		}
 		cfg := &internal.Config{
 			CloudflareAPIToken:  strings.TrimSpace(m.inputs[0].Value()),
 			CloudflareAccountID: strings.TrimSpace(m.inputs[1].Value()),
 			Provider:            provider,
-			BrevoAPIKey:         strings.TrimSpace(m.inputs[3].Value()),
-			BrevoSMTPKey:        strings.TrimSpace(m.inputs[4].Value()),
-			BrevoSMTPLogin:      strings.TrimSpace(m.inputs[5].Value()),
-			ResendAPIKey:        strings.TrimSpace(m.inputs[6].Value()),
+			ResendAPIKey:        strings.TrimSpace(m.inputs[3].Value()),
+			BrevoAPIKey:         strings.TrimSpace(m.inputs[4].Value()),
+			BrevoSMTPKey:        strings.TrimSpace(m.inputs[5].Value()),
+			BrevoSMTPLogin:      strings.TrimSpace(m.inputs[6].Value()),
 			DefaultForwardTo:    strings.TrimSpace(m.inputs[7].Value()),
 		}
+
+		// Carry over everything the wizard does not ask about. Without this,
+		// re-running setup from the dashboard silently drops every configured
+		// domain from the config file.
+		if existing, err := internal.LoadConfig(); err == nil {
+			cfg.Domains = existing.Domains
+			cfg.SMTP = existing.SMTP
+		}
+		cfg.ApplySMTPDefaults(strings.TrimSpace(m.inputs[8].Value()))
+
 		if err := internal.SaveConfig(cfg); err != nil {
 			return StatusMsg{Text: "Error: " + err.Error()}
 		}

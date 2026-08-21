@@ -47,24 +47,36 @@ const (
 type Config struct {
 	CloudflareAPIToken  string `yaml:"cloudflare_api_token"`
 	CloudflareAccountID string `yaml:"cloudflare_account_id"`
-	// Provider selects the sending provider: "brevo" (default) or "resend".
-	Provider         string `yaml:"provider,omitempty"`
-	BrevoAPIKey      string `yaml:"brevo_api_key,omitempty"`
-	BrevoSMTPKey     string `yaml:"brevo_smtp_key,omitempty"`
-	BrevoSMTPLogin   string `yaml:"brevo_smtp_login,omitempty"`
-	ResendAPIKey     string `yaml:"resend_api_key,omitempty"`
-	DefaultForwardTo string `yaml:"default_forward_to"`
+	// Provider selects the sending provider: "resend" (default) or "brevo".
+	Provider         string         `yaml:"provider,omitempty"`
+	BrevoAPIKey      string         `yaml:"brevo_api_key,omitempty"`
+	BrevoSMTPKey     string         `yaml:"brevo_smtp_key,omitempty"`
+	BrevoSMTPLogin   string         `yaml:"brevo_smtp_login,omitempty"`
+	ResendAPIKey     string         `yaml:"resend_api_key,omitempty"`
+	DefaultForwardTo string         `yaml:"default_forward_to"`
 	Domains          []DomainConfig `yaml:"domains,omitempty"`
 	SMTP             *SMTPConfig    `yaml:"smtp,omitempty"`
 }
 
-// SendingProvider returns the configured provider, defaulting to Brevo so
-// that existing configs written before Resend support keep working.
+// SendingProvider returns the configured provider. Resend is the default, but
+// a config that names no provider while carrying Brevo credentials and no
+// Resend key was written before Resend support existed, so it stays on Brevo
+// rather than being switched to a provider it has no key for.
 func (c *Config) SendingProvider() string {
-	if c.Provider == ProviderResend {
+	switch c.Provider {
+	case ProviderResend:
 		return ProviderResend
+	case ProviderBrevo:
+		return ProviderBrevo
 	}
-	return ProviderBrevo
+	if c.ResendAPIKey == "" && c.hasBrevoCredentials() {
+		return ProviderBrevo
+	}
+	return ProviderResend
+}
+
+func (c *Config) hasBrevoCredentials() bool {
+	return c.BrevoAPIKey != "" || c.BrevoSMTPKey != "" || c.BrevoSMTPLogin != ""
 }
 
 func ConfigPath() string {
@@ -158,4 +170,39 @@ func MaskAPIKey(key string) string {
 		return "****"
 	}
 	return key[:4] + "****" + key[len(key)-4:]
+}
+
+// ApplySMTPDefaults fills in the smtp block that flows read from. Without a
+// default_from, `mailctl flow run` fails with "no sender address" on a setup
+// that otherwise completed cleanly. For Brevo the relay details are derivable
+// from credentials already in the config, so they are filled in too rather
+// than left for the user to discover.
+func (c *Config) ApplySMTPDefaults(defaultFrom string) {
+	needsBrevoRelay := c.SendingProvider() == ProviderBrevo &&
+		c.BrevoSMTPLogin != "" && c.BrevoSMTPKey != ""
+
+	if defaultFrom == "" && !needsBrevoRelay {
+		return
+	}
+
+	if c.SMTP == nil {
+		c.SMTP = &SMTPConfig{}
+	}
+	if defaultFrom != "" {
+		c.SMTP.DefaultFrom = defaultFrom
+	}
+	if needsBrevoRelay {
+		if c.SMTP.Host == "" {
+			c.SMTP.Host = "smtp-relay.brevo.com"
+		}
+		if c.SMTP.Port == 0 {
+			c.SMTP.Port = 587
+		}
+		if c.SMTP.User == "" {
+			c.SMTP.User = c.BrevoSMTPLogin
+		}
+		if c.SMTP.Pass == "" {
+			c.SMTP.Pass = c.BrevoSMTPKey
+		}
+	}
 }
