@@ -1,5 +1,4 @@
 {{define "content"}}
-<p class="muted" style="font-size:.85rem"><a href="/">← all domains</a></p>
 <h2 class="mono">
   {{.Domain.Domain}}
   {{if .Domain.IsSending}}<span class="pill info">sending only</span>{{else}}<span class="pill info">mailbox</span>{{end}}

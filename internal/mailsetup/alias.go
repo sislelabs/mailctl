@@ -284,3 +284,37 @@ func sameAddresses(a, b []string) bool {
 	}
 	return true
 }
+
+// CatchAll describes a domain's catch-all rule: where mail to any address not
+// matched by a specific rule ends up.
+type CatchAll struct {
+	Enabled bool
+	// DeliversTo is the destination when enabled.
+	DeliversTo string
+}
+
+// CatchAllFor reads a domain's catch-all rule from Cloudflare.
+//
+// It lives at its own endpoint and never appears in the routing-rules list, so
+// it has to be asked for separately — which is also why teardown has to
+// disable it explicitly.
+func CatchAllFor(cfg *internal.Config, d *internal.DomainConfig) (*CatchAll, error) {
+	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
+	rule, err := cf.GetCatchAllRule(d.CloudflareZoneID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &CatchAll{}
+	if !rule.Enabled {
+		return out, nil
+	}
+	for _, a := range rule.Actions {
+		if a.Type == "forward" && len(a.Value) > 0 {
+			out.Enabled = true
+			out.DeliversTo = a.Value[0]
+			return out, nil
+		}
+	}
+	return out, nil
+}

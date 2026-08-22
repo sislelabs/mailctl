@@ -352,3 +352,32 @@ func TestGmailRefusedForSendingDomains(t *testing.T) {
 		t.Errorf("expected an explanation, got:\n%s", rec.Body.String())
 	}
 }
+
+func TestOverviewDefersCatchAll(t *testing.T) {
+	rec := get(t, testServer(t), "/")
+	body := rec.Body.String()
+
+	// The catch-all is a live read at its own Cloudflare endpoint. Rendering
+	// config instead would show the first alias's destination, which is a
+	// different value that only happens to agree.
+	if !strings.Contains(body, `hx-get="/domains/example.com/catchall"`) {
+		t.Error("overview should load the catch-all per row")
+	}
+	if !strings.Contains(body, "Catch-all delivers to") {
+		t.Error("expected the column to be labelled for what it shows")
+	}
+}
+
+func TestBreadcrumbOnlyOnDomainPages(t *testing.T) {
+	if strings.Contains(get(t, testServer(t), "/").Body.String(), `class="crumb`) {
+		t.Error("the root page should have no breadcrumb")
+	}
+	body := get(t, testServer(t), "/domains/example.com").Body.String()
+	if !strings.Contains(body, `class="crumb mono">example.com`) {
+		t.Error("domain page should name itself in the header")
+	}
+	// The brand is the way back, so a separate in-page link is redundant.
+	if strings.Contains(body, "all domains</a>") {
+		t.Error("the stray back link should be gone")
+	}
+}

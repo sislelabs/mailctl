@@ -2,12 +2,12 @@
 <h2>Mailbox domains <span class="muted">— receive and send</span></h2>
 <div class="card scroll">
 <table>
-  <tr><th>Domain</th><th>Addresses</th><th>Delivers to</th><th>Tracked records</th></tr>
+  <tr><th>Domain</th><th>Addresses</th><th>Catch-all delivers to</th><th>Tracked records</th></tr>
   {{range .Mailbox}}
   <tr>
     <td><a href="/domains/{{.Domain}}" class="mono">{{.Domain}}</a></td>
     <td class="mono muted">{{range .Aliases}}{{.Alias}}@ {{end}}</td>
-    <td class="mono muted">{{.ForwardTo}}</td>
+    <td hx-get="/domains/{{.Domain}}/catchall" hx-trigger="load" hx-swap="outerHTML" class="muted">…</td>
     <td>{{if .Tracked}}{{.Tracked}}{{else}}<span class="pill warn" title="teardown will skip DNS for this domain">not tracked</span>{{end}}</td>
   </tr>
   {{else}}

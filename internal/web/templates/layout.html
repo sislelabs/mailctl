@@ -22,9 +22,12 @@ body {
   font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
 }
 header {
-  border-bottom: 1px solid var(--line); padding: 1rem 1.5rem;
-  display: flex; align-items: baseline; gap: 1rem;
+  border-bottom: 1px solid var(--line); padding: .85rem 1.5rem;
+  display: flex; align-items: baseline; gap: 1rem; justify-content: space-between;
 }
+header nav { display: flex; align-items: baseline; gap: .5rem; min-width: 0; }
+header .sep { color: var(--line); }
+header .crumb { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 header a.brand { font-weight: 650; color: var(--ink); text-decoration: none; letter-spacing: -.01em; }
 header .sub { color: var(--muted); font-size: .85rem; }
 main { max-width: 68rem; margin: 0 auto; padding: 1.5rem; }
@@ -98,8 +101,11 @@ button.danger-outline { border-color: var(--bad); color: var(--bad); }
 </head>
 <body>
 <header>
-  <a class="brand" href="/">mailctl</a>
-  <span class="sub">local panel · read-write on aliases</span>
+  <nav>
+    <a class="brand" href="/">mailctl</a>
+    {{if .Crumb}}<span class="sep">/</span><span class="crumb mono">{{.Crumb}}</span>{{end}}
+  </nav>
+  <span class="sub">local panel</span>
 </header>
 <main>{{template "content" .}}</main>
 </body>

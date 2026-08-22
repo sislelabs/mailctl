@@ -54,7 +54,8 @@ func NewServer(st store.Store) (*Server, error) {
 		t, err := template.New(page).Funcs(funcs).ParseFS(templateFS,
 			"templates/layout.html", "templates/aliases.html", "templates/audit.html",
 			"templates/job.html", "templates/addform.html", "templates/removeconfirm.html",
-			"templates/sendingdns.html", "templates/gmail.html", "templates/"+page)
+			"templates/sendingdns.html", "templates/gmail.html", "templates/catchall.html",
+			"templates/"+page)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s: %w", page, err)
 		}
@@ -64,7 +65,7 @@ func NewServer(st store.Store) (*Server, error) {
 	frags, err := template.New("frags").Funcs(funcs).ParseFS(templateFS,
 		"templates/aliases.html", "templates/audit.html", "templates/job.html",
 		"templates/addform.html", "templates/removeconfirm.html", "templates/sendingdns.html",
-		"templates/gmail.html")
+		"templates/gmail.html", "templates/catchall.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse fragments: %w", err)
 	}
@@ -84,6 +85,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /domains/{domain}/dns", s.handleSendingDNS)
 	mux.HandleFunc("GET /domains/{domain}/gmail", s.handleGmail)
 	mux.HandleFunc("GET /domains/{domain}/gmail/password", s.handleGmailPassword)
+	mux.HandleFunc("GET /domains/{domain}/catchall", s.handleCatchAll)
 	mux.HandleFunc("POST /domains/{domain}/aliases", s.handleAddAlias)
 	mux.HandleFunc("DELETE /domains/{domain}/aliases/{alias}", s.handleRemoveAlias)
 	mux.HandleFunc("POST /domains/{domain}/aliases/{alias}/forward", s.handleRepointAlias)
@@ -127,7 +129,9 @@ func (s *Server) renderFragment(w http.ResponseWriter, name string, data any) {
 }
 
 type overviewData struct {
-	Title  string
+	Title string
+	// Crumb is the header breadcrumb shown after the brand; empty on the root.
+	Crumb  string
 	Config *internal.Config
 	// Mailbox and Sending are listed separately: they are managed by
 	// different commands and only one of them has addresses to show.
@@ -139,12 +143,11 @@ type overviewData struct {
 }
 
 type domainRow struct {
-	Domain    string
-	Aliases   []internal.Alias
-	ForwardTo string
-	Tracked   int
-	Sending   bool
-	ZoneName  string
+	Domain   string
+	Aliases  []internal.Alias
+	Tracked  int
+	Sending  bool
+	ZoneName string
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -163,11 +166,6 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			Tracked:  len(d.ManagedDNSRecordIDs),
 			Sending:  d.IsSending(),
 			ZoneName: d.ZoneName(),
-		}
-		if len(d.Aliases) > 0 && len(d.Aliases[0].ForwardTo) > 0 {
-			row.ForwardTo = d.Aliases[0].ForwardTo[0]
-		} else {
-			row.ForwardTo = cfg.DefaultForwardTo
 		}
 		if row.Sending {
 			data.Sending = append(data.Sending, row)
@@ -207,6 +205,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 
 type domainData struct {
 	Title     string
+	Crumb     string
 	Domain    *internal.DomainConfig
 	ForwardTo string
 	Error     string
@@ -233,7 +232,7 @@ func (s *Server) handleDomain(w http.ResponseWriter, r *http.Request) {
 	// The alias list needs a live Cloudflare read, so the page ships without it
 	// and htmx fills it in. Blocking here would make the panel feel broken on a
 	// slow link and unusable without one.
-	s.render(w, "domain.html", domainData{Title: d.Domain, Domain: d, ForwardTo: cfg.DefaultForwardTo})
+	s.render(w, "domain.html", domainData{Title: d.Domain, Crumb: d.Domain, Domain: d, ForwardTo: cfg.DefaultForwardTo})
 }
 
 // handleAddAlias creates an alias and re-renders just the alias list, which is
@@ -606,4 +605,36 @@ func (s *Server) handleGmailPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderFragment(w, "gmailpassword", gmailData{Domain: d, Setup: setup})
+}
+
+type catchAllData struct {
+	Domain   string
+	CatchAll *mailsetup.CatchAll
+	Error    string
+}
+
+// handleCatchAll renders one domain's catch-all destination. The overview pulls
+// it in per row: it is a live read, and the value config would have offered is
+// the first alias's destination, which is a different thing that only happens
+// to agree.
+func (s *Server) handleCatchAll(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.store.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	domain := r.PathValue("domain")
+	d := cfg.FindDomain(domain)
+	if d == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	data := catchAllData{Domain: domain}
+	if ca, err := mailsetup.CatchAllFor(cfg, d); err != nil {
+		data.Error = err.Error()
+	} else {
+		data.CatchAll = ca
+	}
+	s.renderFragment(w, "catchall", data)
 }
