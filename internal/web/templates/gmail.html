@@ -1,0 +1,49 @@
+{{define "gmail"}}
+<div id="gmail">
+<div class="card">
+{{if .Error}}
+  <div class="hint">{{.Error}}</div>
+{{else}}
+<ol class="howto">
+  <li>Open <a href="https://mail.google.com/mail/#settings/accounts" target="_blank" rel="noreferrer">Gmail → Settings → Accounts and Import</a></li>
+  <li>Under <b>Send mail as</b>, click <b>Add another email address</b></li>
+  <li>Enter the name recipients should see, and one of the addresses below</li>
+  <li><b class="bad">Uncheck</b> <b>Treat as an alias</b><span class="muted"> — leaving it on makes replies come from your Gmail address instead</span></li>
+  <li>Click Next, then enter the SMTP server below</li>
+  <li>Gmail emails a confirmation code to that address; it forwards to the inbox shown beside it</li>
+  <li>Enter the code to finish</li>
+</ol>
+
+<table>
+  <tr><th>Address to add</th><th>Code arrives at</th></tr>
+  {{range .Setup.Addresses}}
+  <tr><td class="mono">{{.Address}}</td><td class="mono muted">{{join .DeliversTo ", "}}</td></tr>
+  {{else}}
+  <tr><td colspan="2" class="empty">{{if .Setup.AddressesError}}Could not read live routing: {{.Setup.AddressesError}}{{else}}No addresses on this domain yet — add one above.{{end}}</td></tr>
+  {{end}}
+</table>
+
+<table>
+  <tr><th>SMTP setting</th><th>Value</th></tr>
+  <tr><td>Server</td><td class="mono">{{.Setup.Host}}</td></tr>
+  <tr><td>Port</td><td class="mono">{{.Setup.Port}}</td></tr>
+  <tr><td>Username</td><td class="mono">{{.Setup.Username}}</td></tr>
+  <tr><td>Password</td><td id="smtp-password">
+    <span class="mono">{{.Setup.MaskedPassword}}</span>
+    <button class="ghost tiny" hx-get="/domains/{{.Domain.Domain}}/gmail/password"
+            hx-target="#smtp-password" hx-swap="outerHTML">reveal</button>
+    <div class="muted">{{.Setup.PasswordHint}}</div>
+  </td></tr>
+  <tr><td>Security</td><td>TLS</td></tr>
+</table>
+{{end}}
+</div>
+</div>
+{{end}}
+{{template "gmail" .}}
+{{define "gmailpassword"}}
+<td id="smtp-password">
+  <div class="mono reveal">{{.Setup.Password}}</div>
+  <div class="muted">{{.Setup.PasswordHint}}. Anyone who sees this can send as your domain.</div>
+</td>
+{{end}}

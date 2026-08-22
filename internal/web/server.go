@@ -54,7 +54,7 @@ func NewServer(st store.Store) (*Server, error) {
 		t, err := template.New(page).Funcs(funcs).ParseFS(templateFS,
 			"templates/layout.html", "templates/aliases.html", "templates/audit.html",
 			"templates/job.html", "templates/addform.html", "templates/removeconfirm.html",
-			"templates/sendingdns.html", "templates/"+page)
+			"templates/sendingdns.html", "templates/gmail.html", "templates/"+page)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s: %w", page, err)
 		}
@@ -63,7 +63,8 @@ func NewServer(st store.Store) (*Server, error) {
 
 	frags, err := template.New("frags").Funcs(funcs).ParseFS(templateFS,
 		"templates/aliases.html", "templates/audit.html", "templates/job.html",
-		"templates/addform.html", "templates/removeconfirm.html", "templates/sendingdns.html")
+		"templates/addform.html", "templates/removeconfirm.html", "templates/sendingdns.html",
+		"templates/gmail.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse fragments: %w", err)
 	}
@@ -81,6 +82,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /domains/{domain}", s.handleDomain)
 	mux.HandleFunc("GET /domains/{domain}/aliases", s.handleAliases)
 	mux.HandleFunc("GET /domains/{domain}/dns", s.handleSendingDNS)
+	mux.HandleFunc("GET /domains/{domain}/gmail", s.handleGmail)
+	mux.HandleFunc("GET /domains/{domain}/gmail/password", s.handleGmailPassword)
 	mux.HandleFunc("POST /domains/{domain}/aliases", s.handleAddAlias)
 	mux.HandleFunc("DELETE /domains/{domain}/aliases/{alias}", s.handleRemoveAlias)
 	mux.HandleFunc("POST /domains/{domain}/aliases/{alias}/forward", s.handleRepointAlias)
@@ -550,4 +553,57 @@ func (s *Server) requireMailbox(w http.ResponseWriter, domain string) bool {
 		return false
 	}
 	return true
+}
+
+type gmailData struct {
+	Domain *internal.DomainConfig
+	Setup  *mailsetup.GmailSendAs
+	Error  string
+}
+
+// handleGmail renders the Send-mail-as instructions. The address list is read
+// live, so it needs its own request rather than blocking the page.
+func (s *Server) handleGmail(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.store.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	d := cfg.FindDomain(r.PathValue("domain"))
+	if d == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	data := gmailData{Domain: d}
+	if setup, err := mailsetup.GmailSendAsFor(cfg, d); err != nil {
+		data.Error = err.Error()
+	} else {
+		data.Setup = setup
+	}
+	s.renderFragment(w, "gmail", data)
+}
+
+// handleGmailPassword returns the SMTP secret on demand.
+//
+// It is a separate request so the secret is not in the page by default. The
+// panel is local and single-user, but a page that renders a credential is one
+// screenshot away from disclosing it, and these pages get shared.
+func (s *Server) handleGmailPassword(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.store.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	d := cfg.FindDomain(r.PathValue("domain"))
+	if d == nil {
+		http.NotFound(w, r)
+		return
+	}
+	setup, err := mailsetup.GmailSendAsFor(cfg, d)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.renderFragment(w, "gmailpassword", gmailData{Domain: d, Setup: setup})
 }

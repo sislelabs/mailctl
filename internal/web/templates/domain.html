@@ -17,6 +17,13 @@
 </div>
 {{end}}
 
+{{if not .Domain.IsSending}}
+<h2>Send from Gmail</h2>
+<div hx-get="/domains/{{.Domain.Domain}}/gmail" hx-trigger="load" hx-swap="outerHTML">
+  <div class="card"><div class="empty">Loading setup steps…</div></div>
+</div>
+{{end}}
+
 <h2>Sending DNS</h2>
 <div hx-get="/domains/{{.Domain.Domain}}/dns" hx-trigger="load" hx-swap="outerHTML">
   <div class="card"><div class="empty">Checking provider records against the zone…</div></div>

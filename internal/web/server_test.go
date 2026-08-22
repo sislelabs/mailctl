@@ -309,3 +309,46 @@ func TestOverviewSeparatesKinds(t *testing.T) {
 			mailboxIdx, sendingIdx, domainIdx)
 	}
 }
+
+func TestGmailFragmentDoesNotLeakTheSecret(t *testing.T) {
+	cfg := &internal.Config{
+		Provider:         internal.ProviderResend,
+		ResendAPIKey:     "re_supersecretvalue",
+		DefaultForwardTo: "you@example.com",
+	}
+	cfg.AddDomain("example.com", "zone1", []internal.Alias{
+		{Alias: "hello", ForwardTo: []string{"you@example.com"}},
+	})
+	srv, err := NewServer(&store.Memory{Config: cfg})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	rec := get(t, srv.Handler(), "/domains/example.com/gmail")
+	body := rec.Body.String()
+
+	// The panel is local, but a rendered credential is one screenshot away
+	// from disclosure and these pages get shared. It must be fetched, not
+	// merely hidden with markup.
+	if strings.Contains(body, "re_supersecretvalue") {
+		t.Error("the SMTP password must not be in the default fragment")
+	}
+	if !strings.Contains(body, "reveal") {
+		t.Error("expected a reveal control")
+	}
+
+	// And it must be reachable when actually asked for.
+	rec = get(t, srv.Handler(), "/domains/example.com/gmail/password")
+	if !strings.Contains(rec.Body.String(), "re_supersecretvalue") {
+		t.Error("the reveal endpoint should return the password")
+	}
+}
+
+func TestGmailRefusedForSendingDomains(t *testing.T) {
+	// Gmail confirms ownership by emailing a code to the address, so a domain
+	// that cannot receive can never complete the flow.
+	rec := get(t, sendingServer(t), "/domains/info.example.com/gmail")
+	if !strings.Contains(rec.Body.String(), "cannot receive Gmail") {
+		t.Errorf("expected an explanation, got:\n%s", rec.Body.String())
+	}
+}
