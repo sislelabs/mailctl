@@ -31,15 +31,15 @@ type FlowFlagDef struct {
 }
 
 type FlowDef struct {
-	Name        string       `yaml:"name"`
-	Description string       `yaml:"description"`
-	Group       string       `yaml:"group"`
-	Args        []FlowArg    `yaml:"args"`
+	Name        string        `yaml:"name"`
+	Description string        `yaml:"description"`
+	Group       string        `yaml:"group"`
+	Args        []FlowArg     `yaml:"args"`
 	Flags       []FlowFlagDef `yaml:"flags"`
-	Config      []string     `yaml:"config"`
-	From        string       `yaml:"from"`
-	Steps       []StepEntry  `yaml:"steps"`
-	Source      string       `yaml:"-"` // "builtin" or "user"
+	Config      []string      `yaml:"config"`
+	From        string        `yaml:"from"`
+	Steps       []StepEntry   `yaml:"steps"`
+	Source      string        `yaml:"-"` // "builtin" or "user"
 }
 
 // IsInteractive returns true if the flow contains steps that need user input (prompt, confirm).

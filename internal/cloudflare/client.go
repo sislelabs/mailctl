@@ -27,9 +27,9 @@ func NewClient(token string) *Client {
 
 // API response wrapper
 type apiResponse struct {
-	Success bool              `json:"success"`
-	Result  json.RawMessage   `json:"result"`
-	Errors  []apiError        `json:"errors"`
+	Success bool            `json:"success"`
+	Result  json.RawMessage `json:"result"`
+	Errors  []apiError      `json:"errors"`
 }
 
 type apiError struct {
@@ -54,11 +54,11 @@ type EmailRoutingStatus struct {
 }
 
 type RoutingRule struct {
-	ID       string          `json:"id"`
-	Name     string          `json:"name"`
-	Enabled  bool            `json:"enabled"`
-	Matchers []RuleMatcher   `json:"matchers"`
-	Actions  []RuleAction    `json:"actions"`
+	ID       string        `json:"id"`
+	Name     string        `json:"name"`
+	Enabled  bool          `json:"enabled"`
+	Matchers []RuleMatcher `json:"matchers"`
+	Actions  []RuleAction  `json:"actions"`
 }
 
 type RuleMatcher struct {

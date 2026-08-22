@@ -227,7 +227,7 @@ steps:
 
 	fmt.Println()
 	fmt.Println(ui.IconSuccess + " " + ui.Success.Render("Flow scaffolded successfully"))
-	fmt.Println(ui.Dim.Render("  "+outPath))
+	fmt.Println(ui.Dim.Render("  " + outPath))
 	fmt.Println()
 	fmt.Println(ui.Dim.Render("  Run it with: ") + ui.Accent.Render("mailctl flow run "+name))
 	fmt.Println()

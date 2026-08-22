@@ -7,11 +7,11 @@ import (
 	"os"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/flow"
 	"github.com/sislelabs/mailctl/internal/ui"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // FlowRunRequestMsg is sent when a flow should be run from the TUI.

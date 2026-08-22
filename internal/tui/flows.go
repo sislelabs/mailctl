@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sislelabs/mailctl/internal/flow"
-	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/sislelabs/mailctl/internal/flow"
+	"github.com/sislelabs/mailctl/internal/ui"
 )
 
 type flowsState int

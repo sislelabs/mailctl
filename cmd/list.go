@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/brevo"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
 	"github.com/sislelabs/mailctl/internal/resend"
 	"github.com/sislelabs/mailctl/internal/ui"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
 
