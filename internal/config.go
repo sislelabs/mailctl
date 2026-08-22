@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -87,8 +88,11 @@ func ConfigPath() string {
 	return filepath.Join(home, ".mailctl.yaml")
 }
 
-func LoadConfig() (*Config, error) {
-	path := ConfigPath()
+// LoadConfigFrom reads a config from an explicit path. LoadConfig is the
+// same thing against the default location; the split exists so callers that
+// manage their own storage — tests, and anything backed by something other
+// than the user's home directory — do not have to go through ConfigPath.
+func LoadConfigFrom(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read config at %s: %w\nRun 'mailctl init' to create one", path, err)
@@ -101,8 +105,8 @@ func LoadConfig() (*Config, error) {
 	return &cfg, nil
 }
 
-func SaveConfig(cfg *Config) error {
-	path := ConfigPath()
+// SaveConfigTo writes a config to an explicit path with 0600 permissions.
+func SaveConfigTo(path string, cfg *Config) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
@@ -111,6 +115,14 @@ func SaveConfig(cfg *Config) error {
 		return fmt.Errorf("failed to write config: %w", err)
 	}
 	return nil
+}
+
+func LoadConfig() (*Config, error) {
+	return LoadConfigFrom(ConfigPath())
+}
+
+func SaveConfig(cfg *Config) error {
+	return SaveConfigTo(ConfigPath(), cfg)
 }
 
 func (c *Config) FindDomain(domain string) *DomainConfig {
@@ -206,3 +218,6 @@ func (c *Config) ApplySMTPDefaults(defaultFrom string) {
 		}
 	}
 }
+
+// ErrNoConfig reports that no configuration exists yet.
+var ErrNoConfig = errors.New("no config found — run 'mailctl init' to create one")
