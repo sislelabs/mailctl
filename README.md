@@ -59,6 +59,10 @@ mailctl add yourdomain.com -a hello       # Full email setup
 mailctl list                              # List domains with live status
 mailctl check yourdomain.com              # Deep health check (routing, DNS, sending provider)
 mailctl doctor                            # Check the Cloudflare token has every permission
+mailctl sync --dry-run                    # Show where config disagrees with live routing
+mailctl sync                              # Adopt live Cloudflare routing into config
+mailctl register yourdomain.com           # Register an existing domain with the sending provider
+mailctl serve                             # Local web panel
 mailctl logs                              # Recently sent email + delivery status
 mailctl logs -d yourdomain.com -s bounced # Filter the send log
 mailctl alias add yourdomain.com billing  # Add an alias
