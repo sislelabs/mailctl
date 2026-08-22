@@ -107,11 +107,19 @@ func AddDomain(st store.Store, rep Reporter, opts AddOptions) (*AddResult, error
 
 	// Step 0: locate the zone. Nothing else can proceed without it.
 	rep.Step(AddStepZone, StepRunning, "")
-	zone, err := cf.GetZoneByName(domain)
+	match, err := ResolveZone(cf, domain)
 	if err != nil {
 		rep.Step(AddStepZone, StepFailed, "not found — is it added to Cloudflare?")
-		return nil, fmt.Errorf("no Cloudflare zone for %s — is the domain added to Cloudflare?", domain)
+		return nil, err
 	}
+	// Cloudflare Email Routing operates on a whole zone, so a subdomain cannot
+	// receive mail. Setting one up as a mailbox domain would create rules and a
+	// catch-all on the parent zone instead.
+	if match.IsSubdomain {
+		rep.Step(AddStepZone, StepFailed, "subdomain of "+match.ZoneName())
+		return nil, fmt.Errorf("%s is a subdomain of the zone %s, so it cannot receive mail — use 'mailctl register %s' to set it up for sending only", domain, match.ZoneName(), domain)
+	}
+	zone := match.Zone
 	result.ZoneID = zone.ID
 	rep.Step(AddStepZone, StepDone, zone.ID)
 

@@ -98,3 +98,59 @@ func TestApplySMTPDefaults(t *testing.T) {
 		t.Errorf("empty input created an smtp block: %+v", cfg.SMTP)
 	}
 }
+
+func TestDomainKindDefaultsToMailbox(t *testing.T) {
+	// Domains written before sending domains existed carry no kind, and must
+	// keep behaving exactly as they did.
+	legacy := DomainConfig{Domain: "example.com"}
+	if legacy.DomainKind() != KindMailbox || legacy.IsSending() {
+		t.Errorf("legacy entry = %q", legacy.DomainKind())
+	}
+
+	sending := DomainConfig{Domain: "info.example.com", Kind: KindSending}
+	if !sending.IsSending() {
+		t.Error("explicit sending kind not honoured")
+	}
+
+	// An unrecognised value falls back to the safe default rather than
+	// silently disabling routing teardown.
+	odd := DomainConfig{Domain: "example.com", Kind: "whatever"}
+	if odd.DomainKind() != KindMailbox {
+		t.Errorf("unknown kind = %q, want mailbox", odd.DomainKind())
+	}
+}
+
+func TestSubdomainAndZoneName(t *testing.T) {
+	apex := DomainConfig{Domain: "example.com"}
+	if apex.IsSubdomain() || apex.ZoneName() != "example.com" {
+		t.Errorf("apex: sub=%v zone=%q", apex.IsSubdomain(), apex.ZoneName())
+	}
+
+	sub := DomainConfig{Domain: "info.example.com", ZoneDomain: "example.com"}
+	if !sub.IsSubdomain() || sub.ZoneName() != "example.com" {
+		t.Errorf("sub: sub=%v zone=%q", sub.IsSubdomain(), sub.ZoneName())
+	}
+
+	// A zone_domain equal to the domain is not a subdomain.
+	same := DomainConfig{Domain: "example.com", ZoneDomain: "example.com"}
+	if same.IsSubdomain() {
+		t.Error("equal zone_domain should not read as a subdomain")
+	}
+}
+
+func TestAddSendingDomain(t *testing.T) {
+	cfg := &Config{}
+	cfg.AddSendingDomain("info.example.com", "zone1", "example.com")
+	cfg.AddSendingDomain("other.com", "zone2", "other.com")
+
+	sub := cfg.FindDomain("info.example.com")
+	if sub == nil || !sub.IsSending() || !sub.IsSubdomain() {
+		t.Fatalf("subdomain entry wrong: %+v", sub)
+	}
+
+	// When the domain is the zone apex, zone_domain is redundant and omitted.
+	apex := cfg.FindDomain("other.com")
+	if apex == nil || apex.ZoneDomain != "" || apex.IsSubdomain() {
+		t.Fatalf("apex entry wrong: %+v", apex)
+	}
+}

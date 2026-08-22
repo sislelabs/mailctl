@@ -3,6 +3,7 @@ package cloudflare
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +37,11 @@ type apiError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
+
+// ErrZoneNotFound reports that no zone exists for a name. It is distinguishable
+// so callers walking up a subdomain can tell "this label is not a zone" apart
+// from "the API rejected us", and stop walking on the latter.
+var ErrZoneNotFound = errors.New("no such zone")
 
 // Zone types
 type ZoneAccount struct {
@@ -138,7 +144,7 @@ func (c *Client) GetZoneByName(domain string) (*Zone, error) {
 	}
 
 	if len(zones) == 0 {
-		return nil, fmt.Errorf("no zone found for %s — is it added to Cloudflare?", domain)
+		return nil, fmt.Errorf("%w: %s", ErrZoneNotFound, domain)
 	}
 
 	return &zones[0], nil

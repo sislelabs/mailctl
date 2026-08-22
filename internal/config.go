@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -20,6 +21,13 @@ type DomainConfig struct {
 	CloudflareZoneID string  `yaml:"cloudflare_zone_id"`
 	Aliases          []Alias `yaml:"aliases,omitempty"`
 	AddedAt          string  `yaml:"added_at"`
+	// Kind is "mailbox" or "sending". Empty means mailbox, so configs written
+	// before sending domains existed keep their behaviour.
+	Kind string `yaml:"kind,omitempty"`
+	// ZoneDomain is the apex of the Cloudflare zone holding this domain, set
+	// only when the domain is a subdomain of it. Empty means the domain is the
+	// zone apex.
+	ZoneDomain string `yaml:"zone_domain,omitempty"`
 	// ResendDomainID is Resend's opaque domain identifier (UUID). Resend
 	// addresses domains by ID rather than name, so we persist it here for
 	// later check/remove operations. Empty for Brevo-managed domains.
@@ -38,6 +46,18 @@ type SMTPConfig struct {
 	Pass        string `yaml:"pass"`
 	DefaultFrom string `yaml:"default_from"`
 }
+
+// Domain kinds. A mailbox domain receives mail through Cloudflare Email
+// Routing and sends through the provider; a sending domain only sends.
+//
+// The distinction matters for teardown. A sending domain is usually a
+// subdomain of a zone that holds unrelated mail — newsletters are put on one
+// deliberately, to keep bounce reputation away from human mailboxes — so
+// tearing one down must never touch the zone-level catch-all or routing rules.
+const (
+	KindMailbox = "mailbox"
+	KindSending = "sending"
+)
 
 // Sending providers supported for domain authentication and email sending.
 const (
@@ -134,11 +154,29 @@ func (c *Config) FindDomain(domain string) *DomainConfig {
 	return nil
 }
 
+// AddDomain records a mailbox domain: one that receives through Cloudflare
+// and sends through the provider.
 func (c *Config) AddDomain(domain, zoneID string, aliases []Alias) {
 	c.Domains = append(c.Domains, DomainConfig{
 		Domain:           domain,
 		CloudflareZoneID: zoneID,
+		Kind:             KindMailbox,
 		Aliases:          aliases,
+		AddedAt:          time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// AddSendingDomain records a send-only domain. zoneDomain is the apex of the
+// zone holding it, which differs from domain when it is a subdomain.
+func (c *Config) AddSendingDomain(domain, zoneID, zoneDomain string) {
+	if strings.EqualFold(zoneDomain, domain) {
+		zoneDomain = ""
+	}
+	c.Domains = append(c.Domains, DomainConfig{
+		Domain:           domain,
+		CloudflareZoneID: zoneID,
+		ZoneDomain:       zoneDomain,
+		Kind:             KindSending,
 		AddedAt:          time.Now().UTC().Format(time.RFC3339),
 	})
 }
@@ -221,3 +259,31 @@ func (c *Config) ApplySMTPDefaults(defaultFrom string) {
 
 // ErrNoConfig reports that no configuration exists yet.
 var ErrNoConfig = errors.New("no config found — run 'mailctl init' to create one")
+
+// DomainKind returns the domain's kind, defaulting to mailbox so that configs
+// written before sending domains existed behave exactly as they did.
+func (d *DomainConfig) DomainKind() string {
+	if d.Kind == KindSending {
+		return KindSending
+	}
+	return KindMailbox
+}
+
+// IsSending reports whether the domain only sends.
+func (d *DomainConfig) IsSending() bool {
+	return d.DomainKind() == KindSending
+}
+
+// IsSubdomain reports whether the domain sits below its zone's apex. Cloudflare
+// Email Routing operates on a zone, so a subdomain can send but cannot receive.
+func (d *DomainConfig) IsSubdomain() bool {
+	return d.ZoneDomain != "" && !strings.EqualFold(d.ZoneDomain, d.Domain)
+}
+
+// ZoneName returns the apex of the zone holding this domain.
+func (d *DomainConfig) ZoneName() string {
+	if d.ZoneDomain != "" {
+		return d.ZoneDomain
+	}
+	return d.Domain
+}
