@@ -206,7 +206,14 @@ func RepointAlias(st store.Store, domain, alias, forwardTo string) (*RepointResu
 
 	// Cloudflare rejects a rule pointing at an unregistered destination, so
 	// register it first and report whether it is usable yet.
+	//
+	// The account comes from the zone, not from config: destination addresses
+	// are verified per account, and asking the wrong one reports every address
+	// as unregistered while quietly creating it somewhere it will never be used.
 	accountID := cfg.CloudflareAccountID
+	if zone, err := cf.GetZoneByName(d.ZoneName()); err == nil {
+		accountID = zone.Account.ID
+	}
 	if addrs, err := cf.ListDestinationAddresses(accountID); err == nil {
 		for _, a := range addrs {
 			if strings.EqualFold(a.Email, forwardTo) {

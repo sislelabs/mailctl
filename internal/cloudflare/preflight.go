@@ -3,6 +3,7 @@ package cloudflare
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Permission names as they appear in the Cloudflare API token editor. These are
@@ -122,9 +123,18 @@ func (c *Client) Preflight(zoneName, accountID string) []CheckResult {
 	if zone == nil {
 		return results
 	}
-	if accountID == "" {
-		accountID = zone.Account.ID
+	// The zone knows which account owns it, and that is the account whose
+	// destination addresses matter. A configured value that disagrees is not a
+	// tie to break — it is a misconfiguration that makes every destination
+	// lookup answer about the wrong account.
+	if accountID != "" && !strings.EqualFold(accountID, zone.Account.ID) {
+		results = append(results, CheckResult{
+			Name:   "Configured account ID matches the zones",
+			Detail: "config says " + accountID + ", but " + zone.Name + " belongs to " + zone.Account.ID,
+			Fatal:  false,
+		})
 	}
+	accountID = zone.Account.ID
 
 	// 3. Zone-scoped surfaces.
 	results = append(results, c.probe(
