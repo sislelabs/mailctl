@@ -74,8 +74,8 @@ func runGmail(cmd *cobra.Command, args []string) error {
 		"Enter the name recipients should see, and one of the addresses above",
 		ui.Error.Render("Uncheck") + " " + ui.White.Render("Treat as an alias") + ui.Dim.Render(" — leaving it on makes replies come from your Gmail address instead"),
 		"Click Next, then fill in the SMTP server below",
-		"Gmail emails a confirmation code to that address; it forwards to the inbox shown above",
-		"Enter the code to finish",
+		"Gmail emails a confirmation link and code to that address; it forwards to the inbox shown above",
+		"Click the link, or paste the code, to finish",
 	}
 	for i, s := range steps {
 		fmt.Printf("  %s %s\n", ui.Dim.Render(fmt.Sprintf("%d.", i+1)), s)
