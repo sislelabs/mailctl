@@ -191,9 +191,9 @@ func AddDomain(st store.Store, rep Reporter, opts AddOptions) (*AddResult, error
 
 	// Steps 5–8: register with the sending provider and publish its DNS.
 	if cfg.SendingProvider() == internal.ProviderResend {
-		addResend(cf, resend.NewClient(cfg.ResendAPIKey), rep, zone.ID, domain, forwardTo, result)
+		addResend(cf, resend.NewClient(cfg.ResendAPIKey), rep, addProviderSteps, zone.ID, domain, forwardTo, result)
 	} else {
-		addBrevo(cf, brevo.NewClient(cfg.BrevoAPIKey), rep, zone.ID, domain, forwardTo, aliases, result)
+		addBrevo(cf, brevo.NewClient(cfg.BrevoAPIKey), rep, addProviderSteps, zone.ID, domain, forwardTo, aliases, result)
 	}
 
 	// Step 9: persist.
@@ -215,21 +215,21 @@ func AddDomain(st store.Store, rep Reporter, opts AddOptions) (*AddResult, error
 // addResend registers the domain with Resend, publishes its DNS records, and
 // triggers verification. Resend has no per-sender objects — any address on a
 // verified domain can send — so the senders step is a no-op.
-func addResend(cf *cloudflare.Client, rc *resend.Client, rep Reporter, zoneID, domain, forwardTo string, result *AddResult) {
-	rep.Step(AddStepProviderDomain, StepRunning, "")
+func addResend(cf *cloudflare.Client, rc *resend.Client, rep Reporter, steps providerSteps, zoneID, domain, forwardTo string, result *AddResult) {
+	rep.Step(steps.Domain, StepRunning, "")
 	rd, err := rc.AddDomain(domain)
 	if err != nil {
-		rep.Step(AddStepProviderDomain, StepWarn, "failed — receiving still works")
-		rep.Note(AddStepProviderDomain, NoteWarn, err.Error())
-		rep.Step(AddStepDNS, StepWarn, "skipped")
-		rep.Step(AddStepAuthenticate, StepWarn, "skipped")
-		rep.Step(AddStepSenders, StepDone, "n/a for Resend")
+		rep.Step(steps.Domain, StepWarn, "failed — receiving still works")
+		rep.Note(steps.Domain, NoteWarn, err.Error())
+		rep.Step(steps.DNS, StepWarn, "skipped")
+		rep.Step(steps.Authenticate, StepWarn, "skipped")
+		rep.Step(steps.Senders, StepDone, "n/a for Resend")
 		return
 	}
 	result.ResendDomainID = rd.ID
-	rep.Step(AddStepProviderDomain, StepDone, rd.ID)
+	rep.Step(steps.Domain, StepDone, rd.ID)
 
-	rep.Step(AddStepDNS, StepRunning, "")
+	rep.Step(steps.DNS, StepRunning, "")
 	for _, rec := range rd.Records {
 		name := ResendRecordName(rec.Name, domain)
 		cfRec := cloudflare.DNSRecord{
@@ -244,42 +244,42 @@ func addResend(cf *cloudflare.Client, rc *resend.Client, rep Reporter, zoneID, d
 		}
 		id, err := cf.CreateDNSRecord(zoneID, cfRec)
 		if err != nil {
-			rep.Note(AddStepDNS, NoteWarn, rec.Type+" "+name+" — "+err.Error())
+			rep.Note(steps.DNS, NoteWarn, rec.Type+" "+name+" — "+err.Error())
 			continue
 		}
 		result.recordManaged(id)
-		rep.Note(AddStepDNS, NoteOK, rec.Type+" "+name)
+		rep.Note(steps.DNS, NoteOK, rec.Type+" "+name)
 	}
-	publishDMARC(cf, rep, zoneID, domain, forwardTo, result)
-	rep.Step(AddStepDNS, StepDone, "")
+	publishDMARC(cf, rep, steps.DNS, zoneID, domain, forwardTo, result)
+	rep.Step(steps.DNS, StepDone, "")
 
-	rep.Step(AddStepAuthenticate, StepRunning, "")
+	rep.Step(steps.Authenticate, StepRunning, "")
 	time.Sleep(2 * time.Second)
 	if err := rc.VerifyDomain(rd.ID); err != nil {
-		rep.Step(AddStepAuthenticate, StepWarn, "pending — DNS may need time to propagate")
+		rep.Step(steps.Authenticate, StepWarn, "pending — DNS may need time to propagate")
 	} else {
-		rep.Step(AddStepAuthenticate, StepDone, "")
+		rep.Step(steps.Authenticate, StepDone, "")
 	}
 
-	rep.Step(AddStepSenders, StepDone, "n/a for Resend")
+	rep.Step(steps.Senders, StepDone, "n/a for Resend")
 }
 
 // addBrevo registers the domain with Brevo, publishes its DNS records,
 // authenticates it, and creates one sender per alias.
-func addBrevo(cf *cloudflare.Client, bv *brevo.Client, rep Reporter, zoneID, domain, forwardTo string, aliases []string, result *AddResult) {
-	rep.Step(AddStepProviderDomain, StepRunning, "")
+func addBrevo(cf *cloudflare.Client, bv *brevo.Client, rep Reporter, steps providerSteps, zoneID, domain, forwardTo string, aliases []string, result *AddResult) {
+	rep.Step(steps.Domain, StepRunning, "")
 	brevoDomain, err := bv.AddDomain(domain)
 	if err != nil {
-		rep.Step(AddStepProviderDomain, StepWarn, "failed — receiving still works")
-		rep.Note(AddStepProviderDomain, NoteWarn, err.Error())
-		rep.Step(AddStepDNS, StepWarn, "skipped")
-		rep.Step(AddStepAuthenticate, StepWarn, "skipped")
-		rep.Step(AddStepSenders, StepWarn, "skipped")
+		rep.Step(steps.Domain, StepWarn, "failed — receiving still works")
+		rep.Note(steps.Domain, NoteWarn, err.Error())
+		rep.Step(steps.DNS, StepWarn, "skipped")
+		rep.Step(steps.Authenticate, StepWarn, "skipped")
+		rep.Step(steps.Senders, StepWarn, "skipped")
 		return
 	}
-	rep.Step(AddStepProviderDomain, StepDone, "")
+	rep.Step(steps.Domain, StepDone, "")
 
-	rep.Step(AddStepDNS, StepRunning, "")
+	rep.Step(steps.DNS, StepRunning, "")
 	for _, rec := range brevoDomain.FlatDNSRecords() {
 		name := brevo.FullRecordName(rec, domain)
 		id, err := cf.CreateDNSRecord(zoneID, cloudflare.DNSRecord{
@@ -289,48 +289,48 @@ func addBrevo(cf *cloudflare.Client, bv *brevo.Client, rep Reporter, zoneID, dom
 			TTL:     3600,
 		})
 		if err != nil {
-			rep.Note(AddStepDNS, NoteWarn, rec.Type+" "+name+" — "+err.Error())
+			rep.Note(steps.DNS, NoteWarn, rec.Type+" "+name+" — "+err.Error())
 			continue
 		}
 		result.recordManaged(id)
-		rep.Note(AddStepDNS, NoteOK, rec.Type+" "+name)
+		rep.Note(steps.DNS, NoteOK, rec.Type+" "+name)
 	}
-	publishDMARC(cf, rep, zoneID, domain, forwardTo, result)
-	rep.Step(AddStepDNS, StepDone, "")
+	publishDMARC(cf, rep, steps.DNS, zoneID, domain, forwardTo, result)
+	rep.Step(steps.DNS, StepDone, "")
 
-	rep.Step(AddStepAuthenticate, StepRunning, "")
+	rep.Step(steps.Authenticate, StepRunning, "")
 	time.Sleep(2 * time.Second)
 	if err := bv.AuthenticateDomain(domain); err != nil {
-		rep.Step(AddStepAuthenticate, StepWarn, "pending — DNS may need time to propagate")
+		rep.Step(steps.Authenticate, StepWarn, "pending — DNS may need time to propagate")
 	} else {
-		rep.Step(AddStepAuthenticate, StepDone, "")
+		rep.Step(steps.Authenticate, StepDone, "")
 	}
 
-	rep.Step(AddStepSenders, StepRunning, "")
+	rep.Step(steps.Senders, StepRunning, "")
 	for _, alias := range aliases {
 		addr := fmt.Sprintf("%s@%s", alias, domain)
 		name := strings.ToUpper(alias[:1]) + alias[1:]
 		if err := bv.CreateSender(name, addr); err != nil {
-			rep.Note(AddStepSenders, NoteWarn, addr+" — "+err.Error())
+			rep.Note(steps.Senders, NoteWarn, addr+" — "+err.Error())
 		} else {
-			rep.Note(AddStepSenders, NoteOK, addr)
+			rep.Note(steps.Senders, NoteOK, addr)
 		}
 	}
-	rep.Step(AddStepSenders, StepDone, "")
+	rep.Step(steps.Senders, StepDone, "")
 }
 
 // publishDMARC adds a starter DMARC policy as part of the DNS step.
-func publishDMARC(cf *cloudflare.Client, rep Reporter, zoneID, domain, forwardTo string, result *AddResult) {
+func publishDMARC(cf *cloudflare.Client, rep Reporter, dnsStep int, zoneID, domain, forwardTo string, result *AddResult) {
 	id, status, detail := EnsureDMARC(cf, zoneID, domain, forwardTo)
 	name := DMARCName(domain)
 	switch status {
 	case DMARCCreated:
 		result.recordManaged(id)
-		rep.Note(AddStepDNS, NoteOK, "TXT "+name+" — "+detail)
+		rep.Note(dnsStep, NoteOK, "TXT "+name+" — "+detail)
 	case DMARCExists:
-		rep.Note(AddStepDNS, NoteOK, "TXT "+name+" — already set, left as is")
+		rep.Note(dnsStep, NoteOK, "TXT "+name+" — already set, left as is")
 	case DMARCFailed:
-		rep.Note(AddStepDNS, NoteWarn, "TXT "+name+" — "+detail)
+		rep.Note(dnsStep, NoteWarn, "TXT "+name+" — "+detail)
 	}
 }
 
@@ -372,4 +372,22 @@ func ValidateAdd(cfg *internal.Config, opts AddOptions) error {
 		return fmt.Errorf("no forward-to address: set default_forward_to in config or pass one with --forward-to")
 	}
 	return nil
+}
+
+// providerSteps maps the four sending-provider stages onto progress indexes,
+// so the same helpers can run inside the full add flow or standalone in
+// register, where they start at zero.
+type providerSteps struct {
+	Domain       int
+	DNS          int
+	Authenticate int
+	Senders      int
+}
+
+// addProviderSteps is the mapping used by AddDomain.
+var addProviderSteps = providerSteps{
+	Domain:       AddStepProviderDomain,
+	DNS:          AddStepDNS,
+	Authenticate: AddStepAuthenticate,
+	Senders:      AddStepSenders,
 }

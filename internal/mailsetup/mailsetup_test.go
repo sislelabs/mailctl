@@ -110,3 +110,29 @@ func TestRemoveStepLabels(t *testing.T) {
 		}
 	}
 }
+
+func TestSameRecordContent(t *testing.T) {
+	// Cloudflare returns TXT values quoted; providers hand them over bare.
+	// Treating that as a difference reported an identical SPF record as a
+	// conflict and skipped publishing it.
+	same := [][2]string{
+		{`"v=spf1 include:amazonses.com ~all"`, "v=spf1 include:amazonses.com ~all"},
+		{"v=spf1 include:amazonses.com ~all", "v=spf1 include:amazonses.com ~all"},
+		{` "p=abc" `, "p=abc"},
+	}
+	for _, c := range same {
+		if !sameRecordContent(c[0], c[1]) {
+			t.Errorf("sameRecordContent(%q, %q) = false, want true", c[0], c[1])
+		}
+	}
+
+	different := [][2]string{
+		{"feedback-smtp.eu-west-1.amazonses.com", "feedback-smtp.us-east-1.amazonses.com"},
+		{`"p=oldkey"`, "p=newkey"},
+	}
+	for _, c := range different {
+		if sameRecordContent(c[0], c[1]) {
+			t.Errorf("sameRecordContent(%q, %q) = true, want false", c[0], c[1])
+		}
+	}
+}

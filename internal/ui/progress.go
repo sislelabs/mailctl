@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -167,7 +169,17 @@ func (m ProgressModel) View() string {
 
 type StepFunc func(send func(tea.Msg)) error
 
+// RunProgress renders a live step display while run does the work.
+//
+// Without a terminal — piped output, CI, a script — it falls back to plain
+// sequential lines. Bubble Tea needs a TTY and fails outright otherwise, which
+// previously made every multi-step command unusable outside an interactive
+// shell.
 func RunProgress(title string, steps []string, run func(p *ProgressRunner)) error {
+	if !isTerminal() {
+		return runProgressPlain(title, steps, run)
+	}
+
 	items := make([]StepItem, len(steps))
 	for i, label := range steps {
 		items[i] = StepItem{Label: label, Status: StepPending}
@@ -191,29 +203,116 @@ func RunProgress(title string, steps []string, run func(p *ProgressRunner)) erro
 
 type ProgressRunner struct {
 	p      *tea.Program
+	plain  *plainRunner
 	Result strings.Builder
 }
 
 func (r *ProgressRunner) Start(index int) {
+	if r.plain != nil {
+		return // the outcome line says everything a plain log needs
+	}
 	r.p.Send(StepUpdateMsg{Index: index, Status: StepRunning})
 }
 
 func (r *ProgressRunner) Done(index int, detail string) {
+	if r.plain != nil {
+		r.plain.step(index, "ok", detail)
+		return
+	}
 	r.p.Send(StepUpdateMsg{Index: index, Status: StepDone, Detail: detail})
 }
 
 func (r *ProgressRunner) Warn(index int, detail string) {
+	if r.plain != nil {
+		r.plain.step(index, "warn", detail)
+		return
+	}
 	r.p.Send(StepUpdateMsg{Index: index, Status: StepWarn, Detail: detail})
 }
 
 func (r *ProgressRunner) Fail(index int, detail string) {
+	if r.plain != nil {
+		r.plain.step(index, "FAIL", detail)
+		return
+	}
 	r.p.Send(StepUpdateMsg{Index: index, Status: StepFail, Detail: detail})
 }
 
 func (r *ProgressRunner) SubRow(index int, row string) {
+	if r.plain != nil {
+		fmt.Fprintln(r.plain.out, "      "+stripANSI(row))
+		return
+	}
 	r.p.Send(StepAddSubRowMsg{Index: index, Row: row})
 }
 
 func (r *ProgressRunner) Print(s string) {
 	r.Result.WriteString(s)
+}
+
+// isTerminal reports whether an interactive terminal is available.
+//
+// It opens /dev/tty rather than only checking whether stdout is a character
+// device, because that is what Bubble Tea itself needs. A controlling terminal
+// can be absent even when stdout looks terminal-ish, and the mismatch surfaces
+// as "could not open a new TTY" after the command has already started work.
+func isTerminal() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	tty, err := os.Open("/dev/tty")
+	if err != nil {
+		return false
+	}
+	_ = tty.Close()
+	return true
+}
+
+// plainRunner writes step progress as plain lines. It satisfies the same shape
+// as ProgressRunner's methods via the shared type below.
+type plainRunner struct {
+	labels []string
+	out    io.Writer
+}
+
+func (r *plainRunner) step(index int, marker, detail string) {
+	if index < 0 || index >= len(r.labels) {
+		return
+	}
+	line := fmt.Sprintf("  %s %s", marker, r.labels[index])
+	if detail != "" {
+		line += " — " + stripANSI(detail)
+	}
+	fmt.Fprintln(r.out, line)
+}
+
+// runProgressPlain is the non-terminal path: same callbacks, plain output.
+func runProgressPlain(title string, steps []string, run func(p *ProgressRunner)) error {
+	out := os.Stdout
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, stripANSI(title))
+
+	pr := &plainRunner{labels: steps, out: out}
+	runner := &ProgressRunner{plain: pr}
+	run(runner)
+
+	fmt.Fprintln(out)
+	return nil
+}
+
+// stripANSI removes escape sequences so styled details stay readable when the
+// output is a file or a pipe.
+func stripANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b {
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }

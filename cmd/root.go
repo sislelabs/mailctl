@@ -96,6 +96,7 @@ func init() {
 	rootCmd.AddCommand(logsCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(registerCmd)
 	rootCmd.AddCommand(removeCmd)
 	rootCmd.AddCommand(aliasCmd)
 	rootCmd.AddCommand(flowCmd)
