@@ -381,3 +381,35 @@ func TestBreadcrumbOnlyOnDomainPages(t *testing.T) {
 		t.Error("the stray back link should be gone")
 	}
 }
+
+func TestDomainSectionsCollapse(t *testing.T) {
+	body := get(t, testServer(t), "/domains/example.com").Body.String()
+
+	// Addresses are the reason to open a mailbox domain, so they stay in view;
+	// everything under them folds away.
+	if strings.Contains(body, "<summary>Addresses") {
+		t.Error("Addresses should not be collapsible")
+	}
+	for _, section := range []string{"Send from Gmail", "Sending DNS", "Details", "Danger zone"} {
+		if !strings.Contains(body, "<summary>"+section+"</summary>") {
+			t.Errorf("%q should be a collapsible section", section)
+		}
+	}
+	// Nothing on a mailbox domain opens by default.
+	if strings.Contains(body, `<details class="section" open>`) {
+		t.Error("mailbox sections should start collapsed")
+	}
+}
+
+func TestSendingDomainOpensItsDNS(t *testing.T) {
+	body := get(t, sendingServer(t), "/domains/info.example.com").Body.String()
+
+	// A sending domain has no address list, so its DNS is the primary content
+	// and starting it collapsed would leave the page looking empty.
+	if !strings.Contains(body, `<details class="section" open>`) {
+		t.Error("sending DNS should start open for a sending domain")
+	}
+	if strings.Contains(body, "Send from Gmail") {
+		t.Error("a sending domain cannot be added to Gmail")
+	}
+}

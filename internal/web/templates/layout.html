@@ -71,6 +71,20 @@ ol.howto { margin: 0; padding: .9rem .9rem .9rem 2.2rem; border-bottom: 1px soli
 ol.howto li { padding: .18rem 0; }
 b.bad { color: var(--bad); }
 button.tiny { padding: .18rem .5rem; font-size: .78rem; }
+details.section > summary {
+  list-style: none; cursor: pointer;
+  font-size: 1rem; letter-spacing: .02em; text-transform: uppercase;
+  color: var(--muted); font-weight: 600;
+  margin: 2rem 0 .75rem; display: flex; align-items: center; gap: .5rem;
+}
+details.section > summary::-webkit-details-marker { display: none; }
+details.section > summary::before { content: "\25b8"; font-size: .8em; }
+details.section[open] > summary::before { content: "\25be"; font-size: .8em; }
+details.section > summary:hover { color: var(--ink); }
+details.danger-section > summary { color: var(--bad); opacity: .75; }
+details.danger-section > summary:hover { color: var(--bad); opacity: 1; }
+h2.pagetitle { text-transform: none; font-size: 1.15rem; color: var(--ink); display: flex; align-items: center; gap: .6rem; }
+p.lede { font-size: .88rem; margin-top: -.4rem; }
 details summary { cursor: pointer; }
 details .reveal { padding: .4rem 0; word-break: break-all; }
 .jobhead { display: flex; gap: .6rem; align-items: center; padding: .9rem; border-bottom: 1px solid var(--line); }

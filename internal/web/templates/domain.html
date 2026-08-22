@@ -1,11 +1,11 @@
 {{define "content"}}
-<h2 class="mono">
+<h2 class="mono pagetitle">
   {{.Domain.Domain}}
   {{if .Domain.IsSending}}<span class="pill info">sending only</span>{{else}}<span class="pill info">mailbox</span>{{end}}
 </h2>
 
 {{if .Domain.IsSending}}
-<p class="muted" style="font-size:.88rem; margin-top:-.4rem">
+<p class="muted lede">
   Sends but does not receive. Its records live in the <span class="mono">{{.Domain.ZoneName}}</span> zone,
   and nothing here affects that zone's routing.
 </p>
@@ -17,37 +17,45 @@
 {{end}}
 
 {{if not .Domain.IsSending}}
-<h2>Send from Gmail</h2>
-<div hx-get="/domains/{{.Domain.Domain}}/gmail" hx-trigger="load" hx-swap="outerHTML">
-  <div class="card"><div class="empty">Loading setup steps…</div></div>
-</div>
+<details class="section">
+  <summary>Send from Gmail</summary>
+  <div hx-get="/domains/{{.Domain.Domain}}/gmail" hx-trigger="load" hx-swap="outerHTML">
+    <div class="card"><div class="empty">Loading setup steps…</div></div>
+  </div>
+</details>
 {{end}}
 
-<h2>Sending DNS</h2>
-<div hx-get="/domains/{{.Domain.Domain}}/dns" hx-trigger="load" hx-swap="outerHTML">
-  <div class="card"><div class="empty">Checking provider records against the zone…</div></div>
-</div>
+<details class="section"{{if .Domain.IsSending}} open{{end}}>
+  <summary>Sending DNS</summary>
+  <div hx-get="/domains/{{.Domain.Domain}}/dns" hx-trigger="load" hx-swap="outerHTML">
+    <div class="card"><div class="empty">Checking provider records against the zone…</div></div>
+  </div>
+</details>
 
-<h2>Details</h2>
-<div class="card scroll">
-<table>
-  <tr><th>Kind</th><td class="mono">{{.Domain.DomainKind}}</td></tr>
-  <tr><th>Cloudflare zone</th><td class="mono">{{.Domain.CloudflareZoneID}}{{if .Domain.IsSubdomain}} <span class="muted">({{.Domain.ZoneName}})</span>{{end}}</td></tr>
-  <tr><th>Resend domain</th><td class="mono">{{if .Domain.ResendDomainID}}{{.Domain.ResendDomainID}}{{else}}<span class="pill warn">not registered</span>{{end}}</td></tr>
-  <tr><th>Tracked DNS records</th><td>{{if .Domain.ManagedDNSRecordIDs}}{{len .Domain.ManagedDNSRecordIDs}}{{else}}<span class="pill warn">none — teardown will skip DNS</span>{{end}}</td></tr>
-  <tr><th>Added</th><td class="mono muted">{{.Domain.AddedAt}}</td></tr>
-</table>
-</div>
+<details class="section">
+  <summary>Details</summary>
+  <div class="card scroll">
+  <table>
+    <tr><th>Kind</th><td class="mono">{{.Domain.DomainKind}}</td></tr>
+    <tr><th>Cloudflare zone</th><td class="mono">{{.Domain.CloudflareZoneID}}{{if .Domain.IsSubdomain}} <span class="muted">({{.Domain.ZoneName}})</span>{{end}}</td></tr>
+    <tr><th>Resend domain</th><td class="mono">{{if .Domain.ResendDomainID}}{{.Domain.ResendDomainID}}{{else}}<span class="pill warn">not registered</span>{{end}}</td></tr>
+    <tr><th>Tracked DNS records</th><td>{{if .Domain.ManagedDNSRecordIDs}}{{len .Domain.ManagedDNSRecordIDs}}{{else}}<span class="pill warn">none — teardown will skip DNS</span>{{end}}</td></tr>
+    <tr><th>Added</th><td class="mono muted">{{.Domain.AddedAt}}</td></tr>
+  </table>
+  </div>
+</details>
 
-<h2>Danger zone</h2>
-<div id="removebox">
-  <div class="card">
-    <div class="inline">
-      <button class="ghost danger-outline"
-        hx-get="/domains/{{.Domain.Domain}}/remove"
-        hx-target="#removebox" hx-swap="outerHTML">Tear down this domain…</button>
+<details class="section danger-section">
+  <summary>Danger zone</summary>
+  <div id="removebox">
+    <div class="card">
+      <div class="inline">
+        <button class="ghost danger-outline"
+          hx-get="/domains/{{.Domain.Domain}}/remove"
+          hx-target="#removebox" hx-swap="outerHTML">Tear down this domain…</button>
+      </div>
     </div>
   </div>
-</div>
+</details>
 {{end}}
 {{template "layout" .}}
