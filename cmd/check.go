@@ -50,7 +50,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
 
-	issues := 0
+	var tally checkTally
 	var sections []string
 
 	header := lipgloss.NewStyle().
@@ -64,12 +64,13 @@ func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 		var rows []string
 		status, err := cf.GetEmailRoutingStatus(d.CloudflareZoneID)
 		if err != nil {
-			rows = append(rows, ui.StepResult(ui.IconWarn, ui.Dim.Render("Could not check (token may lack permission)")))
+			rows = append(rows, ui.StepResult(ui.IconWarn, ui.Warn.Render("Could not check")+" "+ui.Dim.Render("— token may lack Zone Settings")))
+			tally.warnings++
 		} else if status.Enabled {
 			rows = append(rows, ui.StepResult(ui.IconSuccess, ui.Success.Render("Enabled")))
 		} else {
 			rows = append(rows, ui.StepResult(ui.IconError, ui.Error.Render("Disabled")))
-			issues++
+			tally.problems++
 		}
 		sections = append(sections, title+"\n"+strings.Join(rows, "\n"))
 	}
@@ -81,7 +82,7 @@ func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 		rules, err := cf.ListRoutingRules(d.CloudflareZoneID)
 		if err != nil {
 			rows = append(rows, ui.StepResult(ui.IconError, ui.Error.Render("Could not list rules: ")+ui.Dim.Render(err.Error())))
-			issues++
+			tally.problems++
 		} else {
 			for _, a := range d.Aliases {
 				addr := fmt.Sprintf("%s@%s", a.Alias, d.Domain)
@@ -106,7 +107,7 @@ func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 				if !found {
 					rows = append(rows, ui.StepResult(ui.IconError,
 						ui.Error.Render(addr)+" "+ui.Dim.Render("— no routing rule found")))
-					issues++
+					tally.problems++
 				}
 			}
 		}
@@ -119,7 +120,8 @@ func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 		var rows []string
 		catchAll, err := cf.GetCatchAllRule(d.CloudflareZoneID)
 		if err != nil {
-			rows = append(rows, ui.StepResult(ui.IconWarn, ui.Dim.Render("Could not check")))
+			rows = append(rows, ui.StepResult(ui.IconWarn, ui.Warn.Render("Could not check")))
+			tally.warnings++
 		} else if catchAll.Enabled && len(catchAll.Actions) > 0 && catchAll.Actions[0].Type == "forward" {
 			fwd := "?"
 			if len(catchAll.Actions[0].Value) > 0 {
@@ -130,15 +132,20 @@ func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 		} else {
 			rows = append(rows, ui.StepResult(ui.IconWarn,
 				ui.Warn.Render("Disabled")+" "+ui.Dim.Render("— unmatched emails will be dropped")))
+			tally.warnings++
 		}
 		sections = append(sections, title+"\n"+strings.Join(rows, "\n"))
 	}
 
 	// ── Sending Domain (provider-specific) ─────────────────────────
 	if cfg.SendingProvider() == internal.ProviderResend {
-		sections = append(sections, checkResendDomain(cfg, d))
+		section, n := checkResendDomain(cfg, d)
+		sections = append(sections, section)
+		tally.problems += n
 	} else {
-		sections = append(sections, checkBrevoDomain(cfg, d))
+		section, n := checkBrevoDomain(cfg, d)
+		sections = append(sections, section)
+		tally.problems += n
 	}
 
 	// ── MX Records ──────────────────────────────────────────────────
@@ -148,9 +155,10 @@ func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 		mxRecords, err := cf.ListDNSRecords(d.CloudflareZoneID, "MX")
 		if err != nil {
 			rows = append(rows, ui.StepResult(ui.IconError, ui.Error.Render("Could not list: ")+ui.Dim.Render(err.Error())))
-			issues++
+			tally.problems++
 		} else if len(mxRecords) == 0 {
-			rows = append(rows, ui.StepResult(ui.IconWarn, ui.Warn.Render("No MX records found")))
+			rows = append(rows, ui.StepResult(ui.IconError, ui.Error.Render("No MX records")+" "+ui.Dim.Render("— nothing can be received")))
+			tally.problems++
 		} else {
 			for _, mx := range mxRecords {
 				pri := 0
@@ -165,18 +173,10 @@ func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 		sections = append(sections, title+"\n"+strings.Join(rows, "\n"))
 	}
 
-	var summary string
-	if issues == 0 {
-		summary = ui.IconSuccess + " " + ui.Success.Bold(true).Render("All healthy")
-	} else {
-		summary = ui.IconError + " " + ui.Error.Bold(true).Render(fmt.Sprintf("%d issue(s) found", issues))
-	}
+	summary := tally.summary()
 
 	content := strings.Join(sections, "\n")
-	borderColor := ui.ColorGreen
-	if issues > 0 {
-		borderColor = ui.ColorRed
-	}
+	borderColor := tally.borderColor()
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -190,14 +190,16 @@ func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 	fmt.Println()
 }
 
-// checkBrevoDomain renders the Brevo sending-domain section for the health check.
-func checkBrevoDomain(cfg *internal.Config, d *internal.DomainConfig) string {
+// checkBrevoDomain renders the Brevo sending-domain section and reports how
+// many problems it found.
+func checkBrevoDomain(cfg *internal.Config, d *internal.DomainConfig) (string, int) {
 	bv := brevo.NewClient(cfg.BrevoAPIKey)
 	title := ui.SectionTitle.Render("Brevo Domain")
 	var rows []string
 	bDomain, err := bv.GetDomain(d.Domain)
 	if err != nil {
-		rows = append(rows, ui.StepResult(ui.IconWarn, ui.Dim.Render("Not configured in Brevo")))
+		rows = append(rows, ui.StepResult(ui.IconError, ui.Error.Render("Not configured in Brevo")+" "+ui.Dim.Render("— cannot send from this domain")))
+		return title + "\n" + strings.Join(rows, "\n"), 1
 	} else {
 		if bDomain.Authenticated {
 			rows = append(rows, ui.StepResult(ui.IconSuccess, ui.Success.Render("Authenticated")+" "+ui.Dim.Render("— sending ready")))
@@ -224,11 +226,12 @@ func checkBrevoDomain(cfg *internal.Config, d *internal.DomainConfig) string {
 				ui.Dim.Render(statusText)))
 		}
 	}
-	return title + "\n" + strings.Join(rows, "\n")
+	return title + "\n" + strings.Join(rows, "\n"), 0
 }
 
-// checkResendDomain renders the Resend sending-domain section for the health check.
-func checkResendDomain(cfg *internal.Config, d *internal.DomainConfig) string {
+// checkResendDomain renders the Resend sending-domain section and reports how
+// many problems it found.
+func checkResendDomain(cfg *internal.Config, d *internal.DomainConfig) (string, int) {
 	rc := resend.NewClient(cfg.ResendAPIKey)
 	title := ui.SectionTitle.Render("Resend Domain")
 	var rows []string
@@ -244,8 +247,8 @@ func checkResendDomain(cfg *internal.Config, d *internal.DomainConfig) string {
 	}
 
 	if err != nil || rd == nil {
-		rows = append(rows, ui.StepResult(ui.IconWarn, ui.Dim.Render("Not configured in Resend")))
-		return title + "\n" + strings.Join(rows, "\n")
+		rows = append(rows, ui.StepResult(ui.IconError, ui.Error.Render("Not configured in Resend")+" "+ui.Dim.Render("— cannot send from this domain")))
+		return title + "\n" + strings.Join(rows, "\n"), 1
 	}
 
 	if rd.Authenticated() {
@@ -270,7 +273,7 @@ func checkResendDomain(cfg *internal.Config, d *internal.DomainConfig) string {
 			ui.White.Render(name),
 			ui.Dim.Render(statusText)))
 	}
-	return title + "\n" + strings.Join(rows, "\n")
+	return title + "\n" + strings.Join(rows, "\n"), 0
 }
 
 // titleCase upper-cases the first rune of s (ASCII), used for status labels.
@@ -279,4 +282,42 @@ func titleCase(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// checkTally separates findings that are definitely wrong from ones that are
+// merely unverifiable or degraded. Collapsing the two meant a domain that
+// could not send still reported "All healthy", because only hard errors were
+// counted and everything else rendered as an uncounted warning row.
+type checkTally struct {
+	// problems are findings that break sending or receiving.
+	problems int
+	// warnings are findings that degrade the setup or could not be verified.
+	warnings int
+}
+
+func (t checkTally) summary() string {
+	switch {
+	case t.problems > 0 && t.warnings > 0:
+		return ui.IconError + " " + ui.Error.Bold(true).Render(
+			fmt.Sprintf("%d issue(s), %d warning(s)", t.problems, t.warnings))
+	case t.problems > 0:
+		return ui.IconError + " " + ui.Error.Bold(true).Render(
+			fmt.Sprintf("%d issue(s) found", t.problems))
+	case t.warnings > 0:
+		return ui.IconWarn + " " + ui.Warn.Bold(true).Render(
+			fmt.Sprintf("%d warning(s) — nothing broken", t.warnings))
+	default:
+		return ui.IconSuccess + " " + ui.Success.Bold(true).Render("All healthy")
+	}
+}
+
+func (t checkTally) borderColor() lipgloss.Color {
+	switch {
+	case t.problems > 0:
+		return ui.ColorRed
+	case t.warnings > 0:
+		return ui.ColorYellow
+	default:
+		return ui.ColorGreen
+	}
 }
