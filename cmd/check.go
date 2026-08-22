@@ -58,83 +58,89 @@ func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 		Bold(true).
 		Render("  " + d.Domain)
 
-	// ── Cloudflare Email Routing ────────────────────────────────────
-	{
-		title := ui.SectionTitle.Render("Cloudflare Email Routing")
-		var rows []string
-		status, err := cf.GetEmailRoutingStatus(d.CloudflareZoneID)
-		if err != nil {
-			rows = append(rows, ui.StepResult(ui.IconWarn, ui.Warn.Render("Could not check")+" "+ui.Dim.Render("— token may lack Zone Settings")))
-			tally.warnings++
-		} else if status.Enabled {
-			rows = append(rows, ui.StepResult(ui.IconSuccess, ui.Success.Render("Enabled")))
-		} else {
-			rows = append(rows, ui.StepResult(ui.IconError, ui.Error.Render("Disabled")))
-			tally.problems++
+	// Receiving sections apply only to mailbox domains. A sending domain does
+	// not receive by design, and its zone is usually shared with unrelated
+	// mail, so reporting that zone's routing as this domain's problem is wrong
+	// twice over.
+	if !d.IsSending() {
+		{
+			// ── Cloudflare Email Routing ────────────────────────────────────
+			title := ui.SectionTitle.Render("Cloudflare Email Routing")
+			var rows []string
+			status, err := cf.GetEmailRoutingStatus(d.CloudflareZoneID)
+			if err != nil {
+				rows = append(rows, ui.StepResult(ui.IconWarn, ui.Warn.Render("Could not check")+" "+ui.Dim.Render("— token may lack Zone Settings")))
+				tally.warnings++
+			} else if status.Enabled {
+				rows = append(rows, ui.StepResult(ui.IconSuccess, ui.Success.Render("Enabled")))
+			} else {
+				rows = append(rows, ui.StepResult(ui.IconError, ui.Error.Render("Disabled")))
+				tally.problems++
+			}
+			sections = append(sections, title+"\n"+strings.Join(rows, "\n"))
 		}
-		sections = append(sections, title+"\n"+strings.Join(rows, "\n"))
-	}
 
-	// ── Routing Rules ───────────────────────────────────────────────
-	{
-		title := ui.SectionTitle.Render("Routing Rules")
-		var rows []string
-		rules, err := cf.ListRoutingRules(d.CloudflareZoneID)
-		if err != nil {
-			rows = append(rows, ui.StepResult(ui.IconError, ui.Error.Render("Could not list rules: ")+ui.Dim.Render(err.Error())))
-			tally.problems++
-		} else {
-			for _, a := range d.Aliases {
-				addr := fmt.Sprintf("%s@%s", a.Alias, d.Domain)
-				found := false
-				for _, r := range rules {
-					for _, m := range r.Matchers {
-						if m.Value == addr {
-							fwd := "?"
-							if len(r.Actions) > 0 && len(r.Actions[0].Value) > 0 {
-								fwd = ui.MaskEmail(r.Actions[0].Value[0])
+		// ── Routing Rules ───────────────────────────────────────────────
+		{
+			title := ui.SectionTitle.Render("Routing Rules")
+			var rows []string
+			rules, err := cf.ListRoutingRules(d.CloudflareZoneID)
+			if err != nil {
+				rows = append(rows, ui.StepResult(ui.IconError, ui.Error.Render("Could not list rules: ")+ui.Dim.Render(err.Error())))
+				tally.problems++
+			} else {
+				for _, a := range d.Aliases {
+					addr := fmt.Sprintf("%s@%s", a.Alias, d.Domain)
+					found := false
+					for _, r := range rules {
+						for _, m := range r.Matchers {
+							if m.Value == addr {
+								fwd := "?"
+								if len(r.Actions) > 0 && len(r.Actions[0].Value) > 0 {
+									fwd = ui.MaskEmail(r.Actions[0].Value[0])
+								}
+								rows = append(rows, ui.StepResult(ui.IconSuccess,
+									ui.White.Render(addr)+" "+ui.Dim.Render("→")+" "+ui.Dim.Render(fwd)))
+								found = true
+								break
 							}
-							rows = append(rows, ui.StepResult(ui.IconSuccess,
-								ui.White.Render(addr)+" "+ui.Dim.Render("→")+" "+ui.Dim.Render(fwd)))
-							found = true
+						}
+						if found {
 							break
 						}
 					}
-					if found {
-						break
+					if !found {
+						rows = append(rows, ui.StepResult(ui.IconError,
+							ui.Error.Render(addr)+" "+ui.Dim.Render("— no routing rule found")))
+						tally.problems++
 					}
 				}
-				if !found {
-					rows = append(rows, ui.StepResult(ui.IconError,
-						ui.Error.Render(addr)+" "+ui.Dim.Render("— no routing rule found")))
-					tally.problems++
-				}
 			}
+			sections = append(sections, title+"\n"+strings.Join(rows, "\n"))
 		}
-		sections = append(sections, title+"\n"+strings.Join(rows, "\n"))
-	}
 
-	// ── Catch-All ──────────────────────────────────────────────────
-	{
-		title := ui.SectionTitle.Render("Catch-All")
-		var rows []string
-		catchAll, err := cf.GetCatchAllRule(d.CloudflareZoneID)
-		if err != nil {
-			rows = append(rows, ui.StepResult(ui.IconWarn, ui.Warn.Render("Could not check")))
-			tally.warnings++
-		} else if catchAll.Enabled && len(catchAll.Actions) > 0 && catchAll.Actions[0].Type == "forward" {
-			fwd := "?"
-			if len(catchAll.Actions[0].Value) > 0 {
-				fwd = ui.MaskEmail(catchAll.Actions[0].Value[0])
+		// ── Catch-All ──────────────────────────────────────────────────
+		{
+			title := ui.SectionTitle.Render("Catch-All")
+			var rows []string
+			catchAll, err := cf.GetCatchAllRule(d.CloudflareZoneID)
+			if err != nil {
+				rows = append(rows, ui.StepResult(ui.IconWarn, ui.Warn.Render("Could not check")))
+				tally.warnings++
+			} else if catchAll.Enabled && len(catchAll.Actions) > 0 && catchAll.Actions[0].Type == "forward" {
+				fwd := "?"
+				if len(catchAll.Actions[0].Value) > 0 {
+					fwd = ui.MaskEmail(catchAll.Actions[0].Value[0])
+				}
+				rows = append(rows, ui.StepResult(ui.IconSuccess,
+					ui.Success.Render("Enabled")+" "+ui.Dim.Render("→ "+fwd)))
+			} else {
+				rows = append(rows, ui.StepResult(ui.IconWarn,
+					ui.Warn.Render("Disabled")+" "+ui.Dim.Render("— unmatched emails will be dropped")))
+				tally.warnings++
 			}
-			rows = append(rows, ui.StepResult(ui.IconSuccess,
-				ui.Success.Render("Enabled")+" "+ui.Dim.Render("→ "+fwd)))
-		} else {
-			rows = append(rows, ui.StepResult(ui.IconWarn,
-				ui.Warn.Render("Disabled")+" "+ui.Dim.Render("— unmatched emails will be dropped")))
-			tally.warnings++
+			sections = append(sections, title+"\n"+strings.Join(rows, "\n"))
 		}
-		sections = append(sections, title+"\n"+strings.Join(rows, "\n"))
 	}
 
 	// ── Sending Domain (provider-specific) ─────────────────────────
