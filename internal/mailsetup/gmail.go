@@ -2,6 +2,7 @@ package mailsetup
 
 import (
 	"fmt"
+	"net/url"
 
 	"github.com/sislelabs/mailctl/internal"
 )
@@ -27,10 +28,14 @@ type GmailSendAs struct {
 }
 
 // GmailAddress is one address and where its mail currently lands, which is
-// where Gmail's confirmation code will arrive.
+// where Gmail's confirmation will arrive.
 type GmailAddress struct {
 	Address    string
 	DeliversTo []string
+	// SearchURL opens the destination mailbox filtered to Gmail's confirmation
+	// for this address. mailctl cannot show the message itself — Cloudflare
+	// forwards mail on without storing it — but it can point at where it went.
+	SearchURL string
 }
 
 // GmailSendAsFor builds the Gmail setup details for a domain.
@@ -76,6 +81,7 @@ func GmailSendAsFor(cfg *internal.Config, d *internal.DomainConfig) (*GmailSendA
 		out.Addresses = append(out.Addresses, GmailAddress{
 			Address:    v.Address,
 			DeliversTo: v.ForwardTo,
+			SearchURL:  gmailConfirmationSearch(v.Address),
 		})
 	}
 
@@ -85,4 +91,13 @@ func GmailSendAsFor(cfg *internal.Config, d *internal.DomainConfig) (*GmailSendA
 // MaskedPassword returns the password with its middle hidden.
 func (g *GmailSendAs) MaskedPassword() string {
 	return internal.MaskAPIKey(g.Password)
+}
+
+// gmailConfirmationSearch builds a Gmail search that isolates the Send-As
+// confirmation for one address. Gmail sends it from forwarding-noreply, so
+// pairing that sender with the address finds it without wading through an
+// inbox.
+func gmailConfirmationSearch(address string) string {
+	query := fmt.Sprintf("from:forwarding-noreply@google.com %s", address)
+	return "https://mail.google.com/mail/u/0/#search/" + url.QueryEscape(query)
 }

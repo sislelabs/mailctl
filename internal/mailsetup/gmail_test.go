@@ -28,3 +28,20 @@ func TestGmailSendAsRequiresCredentials(t *testing.T) {
 		t.Error("expected an error when no API key is configured")
 	}
 }
+
+func TestGmailConfirmationSearch(t *testing.T) {
+	got := gmailConfirmationSearch("bozhidar@tickero.bg")
+	for _, want := range []string{
+		"mail.google.com",
+		"forwarding-noreply",
+		"tickero.bg",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("search URL missing %q: %s", want, got)
+		}
+	}
+	// The address contains an @, which has to survive as a query parameter.
+	if strings.Contains(got, "#search/from:forwarding") {
+		t.Errorf("query should be escaped: %s", got)
+	}
+}

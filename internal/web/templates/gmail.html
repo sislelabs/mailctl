@@ -16,11 +16,15 @@
 </ol>
 
 <table>
-  <tr><th>Address to add</th><th>Code arrives at</th></tr>
+  <tr><th>Address to add</th><th>Confirmation arrives at</th><th></th></tr>
   {{range .Setup.Addresses}}
-  <tr><td class="mono">{{.Address}}</td><td class="mono muted">{{join .DeliversTo ", "}}</td></tr>
+  <tr>
+    <td class="mono">{{.Address}}</td>
+    <td class="mono muted">{{join .DeliversTo ", "}}</td>
+    <td><a href="{{.SearchURL}}" target="_blank" rel="noreferrer">find confirmation →</a></td>
+  </tr>
   {{else}}
-  <tr><td colspan="2" class="empty">{{if .Setup.AddressesError}}Could not read live routing: {{.Setup.AddressesError}}{{else}}No addresses on this domain yet — add one above.{{end}}</td></tr>
+  <tr><td colspan="3" class="empty">{{if .Setup.AddressesError}}Could not read live routing: {{.Setup.AddressesError}}{{else}}No addresses on this domain yet — add one above.{{end}}</td></tr>
   {{end}}
 </table>
 
