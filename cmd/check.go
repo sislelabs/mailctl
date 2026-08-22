@@ -160,14 +160,28 @@ func checkDomain(cfg *internal.Config, d *internal.DomainConfig) {
 			rows = append(rows, ui.StepResult(ui.IconError, ui.Error.Render("No MX records")+" "+ui.Dim.Render("— nothing can be received")))
 			tally.problems++
 		} else {
+			// Any MX record satisfied the old check, so a domain carrying only
+			// the provider's return-path MX on a send. subdomain reported
+			// healthy while nothing could actually be delivered to it.
+			apexRouting := false
 			for _, mx := range mxRecords {
 				pri := 0
 				if mx.Priority != nil {
 					pri = *mx.Priority
 				}
+				if strings.EqualFold(mx.Name, d.Domain) &&
+					strings.Contains(strings.ToLower(mx.Content), mailsetup.RoutingMXHost) {
+					apexRouting = true
+				}
 				rows = append(rows, ui.StepResult(ui.IconSuccess,
 					ui.White.Render(mx.Name)+" "+ui.Dim.Render("→")+" "+
 						ui.Dim.Render(fmt.Sprintf("%s (priority %d)", mx.Content, pri))))
+			}
+			if !apexRouting && !d.IsSending() {
+				rows = append(rows, ui.StepResult(ui.IconError,
+					ui.Error.Render("No routing MX at "+d.Domain)+" "+
+						ui.Dim.Render("— nothing can be received; Email Routing is not enabled")))
+				tally.problems++
 			}
 		}
 		sections = append(sections, title+"\n"+strings.Join(rows, "\n"))

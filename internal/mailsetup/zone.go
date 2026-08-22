@@ -82,3 +82,27 @@ func ZoneCandidates(name string) []string {
 	}
 	return out
 }
+
+// RoutingMXHost is the suffix of the MX records Cloudflare publishes at a
+// zone's apex when Email Routing is enabled.
+const RoutingMXHost = ".mx.cloudflare.net"
+
+// HasRoutingMX reports whether a domain's apex carries Cloudflare's routing MX
+// records, which is what actually makes mail arrive.
+//
+// It is the observable proxy for "is Email Routing enabled": reading the
+// routing setting needs a token permission that enabling it also needs, so a
+// token that cannot turn routing on cannot be asked whether it is on either.
+// The MX records are readable with plain DNS permissions.
+func HasRoutingMX(cf *cloudflare.Client, zoneID, domain string) bool {
+	records, err := cf.ListDNSRecords(zoneID, "MX")
+	if err != nil {
+		return false
+	}
+	for _, rec := range records {
+		if strings.EqualFold(rec.Name, domain) && strings.Contains(strings.ToLower(rec.Content), RoutingMXHost) {
+			return true
+		}
+	}
+	return false
+}

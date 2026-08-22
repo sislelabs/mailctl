@@ -62,6 +62,9 @@ type AddOptions struct {
 
 // AddResult reports what setting up a domain produced.
 type AddResult struct {
+	// ReceivingBroken is true when Email Routing could not be enabled, so the
+	// domain has rules but no MX records to deliver through.
+	ReceivingBroken  bool
 	ZoneID           string
 	ResendDomainID   string
 	ManagedRecordIDs []string
@@ -132,7 +135,17 @@ func AddDomain(st store.Store, rep Reporter, opts AddOptions) (*AddResult, error
 		}
 	}
 	if err := cf.EnableEmailRouting(zone.ID); err != nil {
-		rep.Step(AddStepRouting, StepWarn, err.Error())
+		// The token may not be allowed to change the setting. Whether routing is
+		// actually on is observable from the apex MX records, and a raw
+		// "Authentication error (code 10000)" tells the reader nothing about
+		// whether their mail will arrive.
+		if HasRoutingMX(cf, zone.ID, domain) {
+			rep.Step(AddStepRouting, StepDone, "already enabled")
+		} else {
+			result.ReceivingBroken = true
+			rep.Step(AddStepRouting, StepWarn, "could not enable — this domain cannot receive mail")
+			rep.Note(AddStepRouting, NoteError, "Add Zone > Zone Settings > Edit to the token, or enable Email Routing for "+domain+" in the Cloudflare dashboard.")
+		}
 	} else {
 		rep.Step(AddStepRouting, StepDone, "")
 	}

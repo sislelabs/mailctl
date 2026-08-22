@@ -2,6 +2,7 @@ package mailsetup
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -28,5 +29,23 @@ func TestZoneCandidates(t *testing.T) {
 		if got := ZoneCandidates(c.in); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("ZoneCandidates(%q) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+func TestRoutingMXHostMatchesCloudflare(t *testing.T) {
+	// The apex MX check keys on this suffix; Cloudflare publishes
+	// route1/2/3.mx.cloudflare.net when Email Routing is enabled.
+	for _, host := range []string{
+		"route1.mx.cloudflare.net",
+		"route2.mx.cloudflare.net",
+		"route3.mx.cloudflare.net",
+	} {
+		if !strings.Contains(host, RoutingMXHost) {
+			t.Errorf("%q should contain %q", host, RoutingMXHost)
+		}
+	}
+	// A provider return-path MX must not be mistaken for routing.
+	if strings.Contains("feedback-smtp.us-east-1.amazonses.com", RoutingMXHost) {
+		t.Error("a return-path MX must not look like a routing MX")
 	}
 }
