@@ -51,12 +51,24 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	if !removeForce {
-		items := []string{
-			ui.IconDot + " Cloudflare routing rules for @" + domain,
-			ui.IconDot + " Catch-all forwarding",
-			ui.IconDot + " " + providerName + " domain",
-			ui.IconDot + " " + dnsScopeSummary(d),
-			ui.IconDot + " Config entry",
+		var items []string
+		if d.IsSending() {
+			// A sending domain has no routing of its own, and its records
+			// usually sit in a zone carrying unrelated mail.
+			items = []string{
+				ui.IconDot + " " + providerName + " domain",
+				ui.IconDot + " " + dnsScopeSummary(d),
+				ui.IconDot + " Config entry",
+				ui.IconDot + " " + ui.Dim.Render("Routing and catch-all on "+d.ZoneName()+" are not touched"),
+			}
+		} else {
+			items = []string{
+				ui.IconDot + " Cloudflare routing rules for @" + domain,
+				ui.IconDot + " Catch-all forwarding",
+				ui.IconDot + " " + providerName + " domain",
+				ui.IconDot + " " + dnsScopeSummary(d),
+				ui.IconDot + " Config entry",
+			}
 		}
 
 		message := fmt.Sprintf("This will remove all email setup for %s:\n\n%s",
@@ -73,7 +85,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	labels := mailsetup.RemoveStepLabels(providerName)
+	labels := mailsetup.RemoveStepLabels(d, providerName)
 
 	var runErr error
 	uiErr := ui.RunProgress("Removing "+ui.Error.Bold(true).Render(domain), labels, func(p *ui.ProgressRunner) {
@@ -114,30 +126,40 @@ func previewRemove(cfg *internal.Config, d *internal.DomainConfig, providerName 
 	fmt.Println(ui.Highlight.Render("  Dry run — nothing will be changed"))
 	fmt.Println()
 
-	fmt.Println(ui.Heading("  Routing rules to delete"))
-	rules, err := cf.ListRoutingRules(d.CloudflareZoneID)
-	if err != nil {
-		fmt.Println(ui.StepResult(ui.IconWarn, ui.Dim.Render(err.Error())))
+	if d.IsSending() {
+		// A sending domain has no routing of its own. Its records sit in a zone
+		// that usually carries unrelated mail, so teardown must leave the
+		// zone-level catch-all and every rule alone.
+		fmt.Println(ui.Heading("  Routing"))
+		fmt.Println(ui.StepResult(ui.IconDot,
+			ui.Dim.Render("not touched — sending domain in the "+d.ZoneName()+" zone")))
+		fmt.Println()
 	} else {
-		found := 0
-		for _, rule := range rules {
-			for _, m := range rule.Matchers {
-				if strings.HasSuffix(m.Value, "@"+domain) {
-					fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render(m.Value)))
-					found++
-					break
+		fmt.Println(ui.Heading("  Routing rules to delete"))
+		rules, err := cf.ListRoutingRules(d.CloudflareZoneID)
+		if err != nil {
+			fmt.Println(ui.StepResult(ui.IconWarn, ui.Dim.Render(err.Error())))
+		} else {
+			found := 0
+			for _, rule := range rules {
+				for _, m := range rule.Matchers {
+					if strings.HasSuffix(m.Value, "@"+domain) {
+						fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render(m.Value)))
+						found++
+						break
+					}
 				}
 			}
+			if found == 0 {
+				fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render("none")))
+			}
 		}
-		if found == 0 {
-			fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render("none")))
-		}
-	}
-	fmt.Println()
+		fmt.Println()
 
-	fmt.Println(ui.Heading("  Catch-all"))
-	fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render("*@"+domain+" would be disabled")))
-	fmt.Println()
+		fmt.Println(ui.Heading("  Catch-all"))
+		fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render("*@"+domain+" would be disabled")))
+		fmt.Println()
+	}
 
 	fmt.Println(ui.Heading("  " + providerName + " domain"))
 	fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render(domain+" would be deleted")))

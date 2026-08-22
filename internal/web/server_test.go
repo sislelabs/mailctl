@@ -204,3 +204,33 @@ func TestRemoveRequiresTheExactDomainName(t *testing.T) {
 		t.Error("a teardown must not start without an exact confirmation")
 	}
 }
+
+func TestRemoveConfirmForSendingDomainOmitsRouting(t *testing.T) {
+	cfg := &internal.Config{Provider: internal.ProviderResend, DefaultForwardTo: "you@example.com"}
+	cfg.AddSendingDomain("info.example.com", "zone1", "example.com")
+
+	srv, err := NewServer(&store.Memory{Config: cfg})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	rec := get(t, srv.Handler(), "/domains/info.example.com/remove")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// The catch-all belongs to example.com, which serves other mail. Promising
+	// to disable it here would be describing damage to a different domain.
+	for _, forbidden := range []string{"Catch-all forwarding", "routing rules for every address"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("sending-domain teardown must not mention %q", forbidden)
+		}
+	}
+	if !strings.Contains(body, "Routing and catch-all on example.com are not touched") {
+		t.Errorf("expected an explicit note that the zone is untouched, got:\n%s", body)
+	}
+	if !strings.Contains(body, "receives nothing") {
+		t.Error("expected the sending-domain wording")
+	}
+}

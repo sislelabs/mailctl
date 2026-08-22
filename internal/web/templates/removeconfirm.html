@@ -3,14 +3,28 @@
 <div class="card danger">
 <div class="dangerhead">Tear down {{.Domain.Domain}}</div>
 <ul class="notes">
+  {{if .Domain.IsSending}}
+  <li class="problem">The {{.Provider}} sending domain</li>
+  <li class="{{if .Tracked}}problem{{else}}info{{end}}">
+    {{if .Tracked}}{{.Tracked}} DNS record(s) mailctl created{{else}}No DNS records — none are tracked, so DNS is left untouched{{end}}
+  </li>
+  <li class="info">Routing and catch-all on {{.Domain.ZoneName}} are not touched</li>
+  {{else}}
   <li class="problem">Cloudflare routing rules for every address on this domain</li>
   <li class="problem">Catch-all forwarding</li>
   <li class="problem">The {{.Provider}} sending domain</li>
   <li class="{{if .Tracked}}problem{{else}}info{{end}}">
     {{if .Tracked}}{{.Tracked}} DNS record(s) mailctl created{{else}}No DNS records — none are tracked, so DNS is left untouched{{end}}
   </li>
+  {{end}}
 </ul>
-<p class="muted">Mail to every address on this domain stops being delivered. This cannot be undone.</p>
+<p class="muted">
+  {{if .Domain.IsSending}}
+  This domain stops being able to send. Nothing it receives changes, because it receives nothing.
+  {{else}}
+  Mail to every address on this domain stops being delivered. This cannot be undone.
+  {{end}}
+</p>
 <form class="inline" hx-delete="/domains/{{.Domain.Domain}}" hx-target="#removebox" hx-swap="outerHTML">
   <input type="text" name="confirm" placeholder="type {{.Domain.Domain}} to confirm" autocomplete="off" required>
   <button type="submit" class="danger">Tear down</button>

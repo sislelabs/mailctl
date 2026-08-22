@@ -1,6 +1,11 @@
 package mailsetup
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/sislelabs/mailctl/internal"
+)
 
 func TestLooksLikeDomain(t *testing.T) {
 	valid := []string{
@@ -99,15 +104,48 @@ func TestAddStepLabels(t *testing.T) {
 	}
 }
 
-func TestRemoveStepLabels(t *testing.T) {
-	labels := RemoveStepLabels("Resend")
-	if len(labels) != removeStepCount {
-		t.Fatalf("got %d labels, want %d", len(labels), removeStepCount)
+func TestRemoveStepLabelsByKind(t *testing.T) {
+	mailbox := &internal.DomainConfig{Domain: "example.com"}
+	if got := RemoveStepLabels(mailbox, "Resend"); len(got) != 5 {
+		t.Fatalf("mailbox: got %d labels, want 5: %v", len(got), got)
 	}
-	for i, l := range labels {
-		if l == "" {
-			t.Errorf("label %d is empty", i)
+
+	// A sending domain has no routing to undo, and its catch-all belongs to a
+	// zone that serves other mail. Those steps must not exist for it at all.
+	sending := &internal.DomainConfig{
+		Domain:     "info.example.com",
+		Kind:       internal.KindSending,
+		ZoneDomain: "example.com",
+	}
+	labels := RemoveStepLabels(sending, "Resend")
+	if len(labels) != 3 {
+		t.Fatalf("sending: got %d labels, want 3: %v", len(labels), labels)
+	}
+	for _, l := range labels {
+		lower := strings.ToLower(l)
+		if strings.Contains(lower, "routing") || strings.Contains(lower, "catch-all") {
+			t.Errorf("sending teardown must not include %q", l)
 		}
+		if l == "" {
+			t.Error("empty label")
+		}
+	}
+}
+
+func TestPlanRemoveIndexes(t *testing.T) {
+	sending := &internal.DomainConfig{Domain: "info.example.com", Kind: internal.KindSending}
+	plan := planRemove(sending, "Resend")
+	if plan.rules != stepAbsent || plan.catchAll != stepAbsent {
+		t.Errorf("sending plan should mark routing steps absent: %+v", plan)
+	}
+	if plan.provider != 0 || plan.dns != 1 || plan.save != 2 {
+		t.Errorf("sending plan indexes wrong: %+v", plan)
+	}
+
+	mailbox := &internal.DomainConfig{Domain: "example.com"}
+	plan = planRemove(mailbox, "Resend")
+	if plan.rules != 0 || plan.catchAll != 1 || plan.provider != 2 || plan.dns != 3 || plan.save != 4 {
+		t.Errorf("mailbox plan indexes wrong: %+v", plan)
 	}
 }
 

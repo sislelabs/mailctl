@@ -379,7 +379,7 @@ func (s *Server) handleRemoveDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job := newJob("remove", domain, mailsetup.RemoveStepLabels(mailsetup.ProviderLabel(cfg)))
+	job := newJob("remove", domain, mailsetup.RemoveStepLabels(d, mailsetup.ProviderLabel(cfg)))
 	if !s.jobs.start(job, func() error {
 		_, err := mailsetup.RemoveDomain(s.store, job, mailsetup.RemoveOptions{Domain: domain})
 		return err
