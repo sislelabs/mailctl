@@ -48,6 +48,16 @@ type RegisterOptions struct {
 
 // RegisterResult reports what registration produced.
 type RegisterResult struct {
+	// Created is true when registration added a new sending domain to config
+	// rather than completing one that was already there.
+	Created bool
+	// Adopted is true when the provider already had the domain and it was
+	// taken under management rather than registered afresh.
+	Adopted bool
+	// ZoneName is the apex of the Cloudflare zone holding the domain.
+	ZoneName string
+	// IsSubdomain reports whether the domain sits below that apex.
+	IsSubdomain      bool
 	ResendDomainID   string
 	ManagedRecordIDs []string
 	// Conflicts lists records the provider wants published where a record of
@@ -89,12 +99,24 @@ func RegisterDomain(st store.Store, rep Reporter, opts RegisterOptions) (*Regist
 	}
 
 	domain := strings.TrimSpace(opts.Domain)
+	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
+	result := &RegisterResult{}
+
+	// A domain already in config is being completed — the launchpaid.app case,
+	// where receiving works but the provider was never told about it. One that
+	// is not becomes a new send-only entry.
 	d := cfg.FindDomain(domain)
 	if d == nil {
-		return nil, fmt.Errorf("domain %s is not in config — use 'mailctl add %s' to set it up from scratch", domain, domain)
+		match, err := ResolveZone(cf, domain)
+		if err != nil {
+			return nil, err
+		}
+		cfg.AddSendingDomain(domain, match.Zone.ID, match.ZoneName())
+		d = cfg.FindDomain(domain)
+		result.Created = true
 	}
-
-	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
+	result.ZoneName = d.ZoneName()
+	result.IsSubdomain = d.IsSubdomain()
 
 	// Snapshot existing records so nothing is published on top of a record
 	// that is already there.
@@ -104,16 +126,10 @@ func RegisterDomain(st store.Store, rep Reporter, opts RegisterOptions) (*Regist
 	}
 
 	addResult := &AddResult{}
-	result := &RegisterResult{}
 
 	if cfg.SendingProvider() == internal.ProviderResend {
 		rc := resend.NewClient(cfg.ResendAPIKey)
-		if d.ResendDomainID != "" {
-			if rd, err := rc.GetDomain(d.ResendDomainID); err == nil && rd != nil {
-				return nil, fmt.Errorf("%s is already registered with Resend (%s)", domain, rd.Status)
-			}
-		}
-		registerResend(cf, rc, rep, existing, d.CloudflareZoneID, domain, cfg.DefaultForwardTo, addResult, result)
+		registerResend(cf, rc, rep, existing, d.CloudflareZoneID, domain, d.ZoneName(), cfg.DefaultForwardTo, addResult, result)
 	} else {
 		bv := brevo.NewClient(cfg.BrevoAPIKey)
 		addBrevo(cf, bv, rep, registerProviderSteps, d.CloudflareZoneID, domain, cfg.DefaultForwardTo, aliasNames(d), addResult)
@@ -141,22 +157,49 @@ func RegisterDomain(st store.Store, rep Reporter, opts RegisterOptions) (*Regist
 
 // registerResend adds the domain to Resend and publishes only the records that
 // are not already present.
-func registerResend(cf *cloudflare.Client, rc *resend.Client, rep Reporter, existing []cloudflare.DNSRecord, zoneID, domain, forwardTo string, addResult *AddResult, result *RegisterResult) {
+//
+// zoneApex is what record names are resolved against, not the domain: Resend
+// returns them relative to the registrable domain, so a sending subdomain gets
+// back "resend._domainkey.info" for info.getsaiton.com, which belongs at
+// resend._domainkey.info.getsaiton.com.
+func registerResend(cf *cloudflare.Client, rc *resend.Client, rep Reporter, existing []cloudflare.DNSRecord, zoneID, domain, zoneApex, forwardTo string, addResult *AddResult, result *RegisterResult) {
 	rep.Step(RegisterStepDomain, StepRunning, "")
-	rd, err := rc.AddDomain(domain)
-	if err != nil {
-		rep.Step(RegisterStepDomain, StepFailed, err.Error())
-		rep.Step(RegisterStepDNS, StepWarn, "skipped")
-		rep.Step(RegisterStepAuthenticate, StepWarn, "skipped")
-		rep.Step(RegisterStepSenders, StepDone, "n/a for Resend")
-		return
+
+	// A domain may already be registered directly in the provider dashboard.
+	// Adopting it is the point of running register on one: creating it again
+	// would be rejected, and the useful outcome is bringing it under management
+	// with its DNS checked, not a fresh registration.
+	var rd *resend.Domain
+	if existingDomain, lookupErr := rc.FindDomainByName(domain); lookupErr == nil && existingDomain != nil {
+		// The list endpoint omits records, so fetch the domain to get them.
+		full, err := rc.GetDomain(existingDomain.ID)
+		if err != nil {
+			rep.Step(RegisterStepDomain, StepFailed, err.Error())
+			rep.Step(RegisterStepDNS, StepWarn, "skipped")
+			rep.Step(RegisterStepAuthenticate, StepWarn, "skipped")
+			rep.Step(RegisterStepSenders, StepDone, "n/a for Resend")
+			return
+		}
+		rd = full
+		result.Adopted = true
+		rep.Step(RegisterStepDomain, StepDone, "already in Resend ("+rd.Status+") — adopted")
+	} else {
+		created, err := rc.AddDomain(domain)
+		if err != nil {
+			rep.Step(RegisterStepDomain, StepFailed, err.Error())
+			rep.Step(RegisterStepDNS, StepWarn, "skipped")
+			rep.Step(RegisterStepAuthenticate, StepWarn, "skipped")
+			rep.Step(RegisterStepSenders, StepDone, "n/a for Resend")
+			return
+		}
+		rd = created
+		rep.Step(RegisterStepDomain, StepDone, rd.ID+" ("+rd.Region+")")
 	}
 	addResult.ResendDomainID = rd.ID
-	rep.Step(RegisterStepDomain, StepDone, rd.ID+" ("+rd.Region+")")
 
 	rep.Step(RegisterStepDNS, StepRunning, "")
 	for _, rec := range rd.Records {
-		name := ResendRecordName(rec.Name, domain)
+		name := ResendRecordName(rec.Name, zoneApex)
 
 		if match := findRecord(existing, rec.Type, name); match != nil {
 			if sameRecordContent(match.Content, rec.Value) {

@@ -162,3 +162,24 @@ func TestSameAddresses(t *testing.T) {
 		}
 	}
 }
+
+func TestRegisterStepLabelsCoverEveryIndex(t *testing.T) {
+	labels := RegisterStepLabels("Resend")
+	if len(labels) != registerStepCount {
+		t.Fatalf("got %d labels, want %d", len(labels), registerStepCount)
+	}
+	for i, l := range labels {
+		if l == "" {
+			t.Errorf("label %d is empty", i)
+		}
+	}
+	// register must never show routing steps: a sending domain has none, and
+	// showing them would imply teardown touches routing.
+	for _, l := range labels {
+		for _, forbidden := range []string{"routing", "catch-all", "Enable email"} {
+			if l == forbidden {
+				t.Errorf("register should not have a %q step", forbidden)
+			}
+		}
+	}
+}
