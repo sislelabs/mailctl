@@ -103,6 +103,10 @@ ul.notes { list-style: none; margin: .2rem 0 0; padding: 0 0 0 .2rem; font-size:
 ul.notes li { padding: .1rem 0; color: var(--muted); }
 ul.notes li.warn { color: var(--warn); }
 ul.notes li.problem { color: var(--bad); }
+ul.notes.advice { padding: .9rem; border-top: 1px solid var(--line); }
+ul.notes.advice li { padding: .25rem 0 .25rem 1rem; position: relative; }
+ul.notes.advice li::before { content: "\2022"; position: absolute; left: 0; }
+td.bad, .bad { color: var(--bad); }
 .card.danger { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
 .dangerhead { padding: .9rem; border-bottom: 1px solid var(--line); font-weight: 650; color: var(--bad); }
 .card.danger ul.notes { padding: .9rem; }

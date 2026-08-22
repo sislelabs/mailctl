@@ -14,6 +14,7 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/mailsetup"
@@ -44,6 +45,7 @@ func NewServer(st store.Store) (*Server, error) {
 		"levelClass": levelClass,
 		"join":       strings.Join,
 		"stepClass":  stepClass,
+		"stageClass": stageClass,
 		"noteClass":  noteClass,
 	}
 
@@ -55,7 +57,7 @@ func NewServer(st store.Store) (*Server, error) {
 			"templates/layout.html", "templates/aliases.html", "templates/audit.html",
 			"templates/job.html", "templates/addform.html", "templates/removeconfirm.html",
 			"templates/sendingdns.html", "templates/gmail.html", "templates/catchall.html",
-			"templates/"+page)
+			"templates/reputation.html", "templates/"+page)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s: %w", page, err)
 		}
@@ -65,7 +67,7 @@ func NewServer(st store.Store) (*Server, error) {
 	frags, err := template.New("frags").Funcs(funcs).ParseFS(templateFS,
 		"templates/aliases.html", "templates/audit.html", "templates/job.html",
 		"templates/addform.html", "templates/removeconfirm.html", "templates/sendingdns.html",
-		"templates/gmail.html", "templates/catchall.html")
+		"templates/gmail.html", "templates/catchall.html", "templates/reputation.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse fragments: %w", err)
 	}
@@ -86,6 +88,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /domains/{domain}/gmail", s.handleGmail)
 	mux.HandleFunc("GET /domains/{domain}/gmail/password", s.handleGmailPassword)
 	mux.HandleFunc("GET /domains/{domain}/catchall", s.handleCatchAll)
+	mux.HandleFunc("GET /domains/{domain}/reputation", s.handleReputation)
 	mux.HandleFunc("POST /domains/{domain}/aliases", s.handleAddAlias)
 	mux.HandleFunc("DELETE /domains/{domain}/aliases/{alias}", s.handleRemoveAlias)
 	mux.HandleFunc("POST /domains/{domain}/aliases/{alias}/forward", s.handleRepointAlias)
@@ -637,4 +640,71 @@ func (s *Server) handleCatchAll(w http.ResponseWriter, r *http.Request) {
 		data.CatchAll = ca
 	}
 	s.renderFragment(w, "catchall", data)
+}
+
+type reputationData struct {
+	Domain *internal.DomainConfig
+	Rep    *mailsetup.Deliverability
+	// RegisteredAt and SendingSince are pre-formatted: the elapsed time is the
+	// part that matters, and templates should not be doing date arithmetic.
+	RegisteredAt string
+	SendingSince string
+	Error        string
+}
+
+// handleReputation renders a domain's sending history and readiness. Correct
+// DNS and good placement are different questions, and this is the half the
+// records cannot answer.
+func (s *Server) handleReputation(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.store.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	d := cfg.FindDomain(r.PathValue("domain"))
+	if d == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	data := reputationData{Domain: d}
+	rep, err := mailsetup.Reputation(cfg, d)
+	if err != nil {
+		data.Error = err.Error()
+		s.renderFragment(w, "reputation", data)
+		return
+	}
+	data.Rep = rep
+	data.RegisteredAt = humanSince(rep.RegisteredAt)
+	if !rep.FirstSent.IsZero() {
+		data.SendingSince = humanSince(rep.FirstSent)
+	}
+	s.renderFragment(w, "reputation", data)
+}
+
+// humanSince renders a date with how long ago it was.
+func humanSince(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+	days := int(time.Since(t).Hours() / 24)
+	switch {
+	case days < 1:
+		return t.Format("2006-01-02") + " (today)"
+	case days == 1:
+		return t.Format("2006-01-02") + " (yesterday)"
+	default:
+		return fmt.Sprintf("%s (%d days ago)", t.Format("2006-01-02"), days)
+	}
+}
+
+func stageClass(s mailsetup.Stage) string {
+	switch s {
+	case mailsetup.StageEstablished:
+		return "ok"
+	case mailsetup.StageWarming:
+		return "info"
+	default:
+		return "warn"
+	}
 }

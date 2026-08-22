@@ -46,6 +46,9 @@ type Domain struct {
 	Status  string      `json:"status"`
 	Region  string      `json:"region"`
 	Records []DNSRecord `json:"records"`
+	// CreatedAt is when the domain was registered with Resend, which bounds
+	// how much sending reputation it can possibly have.
+	CreatedAt string `json:"created_at"`
 }
 
 type listDomainsResponse struct {
@@ -308,4 +311,23 @@ func (c *Client) ListEmailsN(total int) ([]EmailSummary, error) {
 		all = all[:total]
 	}
 	return all, nil
+}
+
+// timeLayouts are the shapes Resend timestamps arrive in.
+var timeLayouts = []string{
+	"2006-01-02 15:04:05.999999-07",
+	"2006-01-02 15:04:05.999999+00",
+	"2006-01-02T15:04:05.999Z",
+	time.RFC3339,
+}
+
+// ParseTime reads a Resend timestamp, returning the zero time when it cannot
+// be understood so callers can treat it as "unknown" rather than fail.
+func ParseTime(raw string) time.Time {
+	for _, layout := range timeLayouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
