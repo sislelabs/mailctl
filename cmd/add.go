@@ -3,13 +3,10 @@ package cmd
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/sislelabs/mailctl/internal"
-	"github.com/sislelabs/mailctl/internal/brevo"
-	"github.com/sislelabs/mailctl/internal/cloudflare"
 	"github.com/sislelabs/mailctl/internal/mailsetup"
-	"github.com/sislelabs/mailctl/internal/resend"
+	"github.com/sislelabs/mailctl/internal/store"
 	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -32,363 +29,40 @@ func init() {
 }
 
 func runAdd(cmd *cobra.Command, args []string) error {
-	domain := args[0]
-
-	// Catch a non-domain locally rather than after a round-trip to Cloudflare,
-	// where it surfaces as a confusing "zone not found".
-	if !mailsetup.LooksLikeDomain(domain) {
-		return fmt.Errorf("%q is not a domain name — pass the registered domain, e.g. %s.com", domain, domain)
-	}
-
-	cfg, err := internal.LoadConfig()
+	st := store.NewYAML()
+	cfg, err := st.Load()
 	if err != nil {
 		return err
 	}
 
-	if cfg.FindDomain(domain) != nil {
-		return fmt.Errorf("domain %s is already configured — use 'mailctl remove %s' first", domain, domain)
+	opts := mailsetup.AddOptions{
+		Domain:    args[0],
+		Aliases:   strings.Split(addAliases, ","),
+		ForwardTo: addForwardTo,
 	}
 
-	forwardTo := cfg.DefaultForwardTo
-	if addForwardTo != "" {
-		forwardTo = addForwardTo
+	// Reject bad input before opening the progress display, so it reads as a
+	// plain error rather than a failed first step.
+	if err := mailsetup.ValidateAdd(cfg, opts); err != nil {
+		return err
 	}
 
-	aliases := strings.Split(addAliases, ",")
-	for i := range aliases {
-		aliases[i] = strings.TrimSpace(aliases[i])
-	}
-
-	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
 	provider := cfg.SendingProvider()
+	labels := mailsetup.AddStepLabels(mailsetup.ProviderLabel(cfg))
 
-	var bv *brevo.Client
-	var rc *resend.Client
-	providerLabel := "Brevo"
-	switch provider {
-	case internal.ProviderResend:
-		rc = resend.NewClient(cfg.ResendAPIKey)
-		providerLabel = "Resend"
-	default:
-		bv = brevo.NewClient(cfg.BrevoAPIKey)
-	}
-
-	stepLabels := []string{
-		"Look up Cloudflare zone",
-		"Enable email routing",
-		"Verify destination address",
-		"Create routing rules",
-		"Enable catch-all",
-		"Add domain to " + providerLabel,
-		"Add DNS records",
-		"Authenticate domain",
-		"Create senders",
-		"Save config",
-	}
-
-	var zoneID string
-	var cfAliases []internal.Alias
-	var resendDomainID string
-	var managedRecordIDs []string
-	var afterOutput string
-
-	err = ui.RunProgress("Setting up "+ui.Highlight.Render(domain), stepLabels, func(p *ui.ProgressRunner) {
-		// Step 0: Find zone
-		p.Start(0)
-		zone, err := cf.GetZoneByName(domain)
-		if err != nil {
-			p.Fail(0, "not found — is it added to Cloudflare?")
-			return
-		}
-		zoneID = zone.ID
-		p.Done(0, ui.Dim.Render(zone.ID))
-
-		// Step 1: Enable email routing
-		// First delete any conflicting MX records that block enabling
-		p.Start(1)
-		mxRecords, _ := cf.ListDNSRecords(zone.ID, "MX")
-		for _, mx := range mxRecords {
-			if mx.Name == domain {
-				cf.DeleteDNSRecord(zone.ID, mx.ID)
-			}
-		}
-		if err := cf.EnableEmailRouting(zone.ID); err != nil {
-			p.Warn(1, err.Error())
-		} else {
-			p.Done(1, "")
-		}
-
-		// Step 2: Verify destination address
-		p.Start(2)
-		destVerified := false
-		if addrs, err := cf.ListDestinationAddresses(zone.Account.ID); err == nil {
-			for _, a := range addrs {
-				if a.Email == forwardTo && a.Verified != "" {
-					destVerified = true
-					break
-				}
-			}
-		}
-		if destVerified {
-			p.Done(2, ui.Dim.Render(forwardTo+" — verified"))
-		} else {
-			// Try to create it
-			if err := cf.CreateDestinationAddress(zone.Account.ID, forwardTo); err != nil {
-				p.Warn(2, forwardTo+" — check Cloudflare Email Routing > Destination addresses")
-			} else {
-				p.Warn(2, forwardTo+" — verification email sent, check inbox and confirm before emails will route")
-			}
-		}
-
-		// Step 3: Create routing rules
-		p.Start(3)
-		ruleErrors := 0
-		for _, alias := range aliases {
-			addr := fmt.Sprintf("%s@%s", alias, domain)
-			rule := cloudflare.RoutingRule{
-				Name:    fmt.Sprintf("Forward %s", addr),
-				Enabled: true,
-				Matchers: []cloudflare.RuleMatcher{
-					{Type: "literal", Field: "to", Value: addr},
-				},
-				Actions: []cloudflare.RuleAction{
-					{Type: "forward", Value: []string{forwardTo}},
-				},
-			}
-			if err := cf.CreateRoutingRule(zone.ID, rule); err != nil {
-				p.SubRow(3, ui.IconError+" "+ui.Error.Render(addr)+" "+ui.Dim.Render(err.Error()))
-				ruleErrors++
-			} else {
-				p.SubRow(3, ui.IconSuccess+" "+ui.Dim.Render(addr+" → "+forwardTo))
-			}
-			cfAliases = append(cfAliases, internal.Alias{
-				Alias:     alias,
-				ForwardTo: []string{forwardTo},
-			})
-		}
-		if ruleErrors > 0 {
-			p.Warn(3, fmt.Sprintf("%d failed", ruleErrors))
-		} else {
-			p.Done(3, fmt.Sprintf("%d rules", len(aliases)))
-		}
-
-		// Step 4: Enable catch-all
-		p.Start(4)
-		catchAll := cloudflare.RoutingRule{
-			Enabled: true,
-			Matchers: []cloudflare.RuleMatcher{
-				{Type: "all"},
-			},
-			Actions: []cloudflare.RuleAction{
-				{Type: "forward", Value: []string{forwardTo}},
-			},
-		}
-		if err := cf.UpdateCatchAllRule(zone.ID, catchAll); err != nil {
-			p.Warn(4, err.Error())
-		} else {
-			p.Done(4, ui.Dim.Render("*@"+domain+" → "+forwardTo))
-		}
-
-		// Steps 5–8: register the domain with the sending provider, add its
-		// DNS records to Cloudflare, trigger authentication, and (Brevo only)
-		// create senders. Receiving already works regardless of the outcome.
-		if provider == internal.ProviderResend {
-			setupResend(p, cf, rc, zone.ID, domain, forwardTo, &resendDomainID, &managedRecordIDs)
-		} else {
-			setupBrevo(p, cf, bv, zone.ID, domain, forwardTo, aliases, &managedRecordIDs)
-		}
-
-		// Step 9: Save config
-		p.Start(9)
-		cfg.AddDomain(domain, zoneID, cfAliases)
-		if d := cfg.FindDomain(domain); d != nil {
-			d.ResendDomainID = resendDomainID
-			d.ManagedDNSRecordIDs = managedRecordIDs
-		}
-		if err := internal.SaveConfig(cfg); err != nil {
-			p.Fail(9, err.Error())
-			return
-		}
-		p.Done(9, "")
-
-		afterOutput = "\n" + successPanel(provider, domain, cfg) + "\n"
+	var runErr error
+	uiErr := ui.RunProgress("Setting up "+ui.Highlight.Render(opts.Domain), labels, func(p *ui.ProgressRunner) {
+		_, runErr = mailsetup.AddDomain(st, progressReporter(p), opts)
 	})
-
-	if err != nil {
-		return err
+	if uiErr != nil {
+		return uiErr
+	}
+	if runErr != nil {
+		return runErr
 	}
 
-	if afterOutput != "" {
-		fmt.Print(afterOutput)
-	}
-
+	fmt.Print("\n" + successPanel(provider, opts.Domain, cfg) + "\n")
 	return nil
-}
-
-// setupBrevo runs the Brevo domain-registration, DNS, authentication, and
-// sender-creation steps (progress steps 5–8). Cloudflare record IDs for every
-// record it creates are appended to managed so teardown can delete exactly
-// those and nothing else.
-func setupBrevo(p *ui.ProgressRunner, cf *cloudflare.Client, bv *brevo.Client, zoneID, domain, forwardTo string, aliases []string, managed *[]string) {
-	p.Start(5)
-	brevoDomain, err := bv.AddDomain(domain)
-	if err != nil {
-		p.Warn(5, "failed — receiving still works")
-		p.SubRow(5, ui.Dim.Render(err.Error()))
-		p.Start(6)
-		p.Warn(6, "skipped")
-		p.Start(7)
-		p.Warn(7, "skipped")
-		p.Start(8)
-		p.Warn(8, "skipped")
-		return
-	}
-	p.Done(5, "")
-
-	// Step 6: Add DNS records to Cloudflare
-	p.Start(6)
-	for _, rec := range brevoDomain.FlatDNSRecords() {
-		name := brevo.FullRecordName(rec, domain)
-		cfRec := cloudflare.DNSRecord{
-			Type:    rec.Type,
-			Name:    name,
-			Content: rec.Value,
-			TTL:     3600,
-		}
-		id, err := cf.CreateDNSRecord(zoneID, cfRec)
-		if err != nil {
-			p.SubRow(6, ui.IconWarn+" "+ui.Dim.Render(rec.Type+" "+name+" — "+err.Error()))
-			continue
-		}
-		recordManaged(managed, id)
-		p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
-	}
-	addDMARC(p, cf, zoneID, domain, forwardTo, managed)
-	p.Done(6, "")
-
-	// Step 7: Authenticate domain
-	p.Start(7)
-	time.Sleep(2 * time.Second)
-	if err := bv.AuthenticateDomain(domain); err != nil {
-		p.Warn(7, "pending — DNS may need time to propagate")
-	} else {
-		p.Done(7, "")
-	}
-
-	// Step 8: Create senders for each alias
-	p.Start(8)
-	for _, alias := range aliases {
-		addr := fmt.Sprintf("%s@%s", alias, domain)
-		name := strings.ToUpper(alias[:1]) + alias[1:]
-		if err := bv.CreateSender(name, addr); err != nil {
-			p.SubRow(8, ui.IconWarn+" "+ui.Dim.Render(addr+" — "+err.Error()))
-		} else {
-			p.SubRow(8, ui.IconSuccess+" "+ui.Dim.Render(addr))
-		}
-	}
-	p.Done(8, "")
-}
-
-// setupResend runs the Resend domain-registration, DNS, and verification steps
-// (progress steps 5–7). Resend has no explicit sender objects — any address on
-// a verified domain can send — so step 8 is a no-op. The created domain's ID is
-// written back through domainID, and every Cloudflare record ID created is
-// appended to managed for later teardown.
-func setupResend(p *ui.ProgressRunner, cf *cloudflare.Client, rc *resend.Client, zoneID, domain, forwardTo string, domainID *string, managed *[]string) {
-	p.Start(5)
-	rd, err := rc.AddDomain(domain)
-	if err != nil {
-		p.Warn(5, "failed — receiving still works")
-		p.SubRow(5, ui.Dim.Render(err.Error()))
-		p.Start(6)
-		p.Warn(6, "skipped")
-		p.Start(7)
-		p.Warn(7, "skipped")
-		p.Start(8)
-		p.Done(8, ui.Dim.Render("n/a for Resend"))
-		return
-	}
-	*domainID = rd.ID
-	p.Done(5, ui.Dim.Render(rd.ID))
-
-	// Step 6: Add DNS records to Cloudflare
-	p.Start(6)
-	for _, rec := range rd.Records {
-		name := resendRecordName(rec.Name, domain)
-		cfRec := cloudflare.DNSRecord{
-			Type:    rec.Type,
-			Name:    name,
-			Content: rec.Value,
-			TTL:     3600,
-		}
-		if strings.EqualFold(rec.Type, "MX") && rec.Priority > 0 {
-			prio := rec.Priority
-			cfRec.Priority = &prio
-		}
-		id, err := cf.CreateDNSRecord(zoneID, cfRec)
-		if err != nil {
-			p.SubRow(6, ui.IconWarn+" "+ui.Dim.Render(rec.Type+" "+name+" — "+err.Error()))
-			continue
-		}
-		recordManaged(managed, id)
-		p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
-	}
-	addDMARC(p, cf, zoneID, domain, forwardTo, managed)
-	p.Done(6, "")
-
-	// Step 7: Trigger verification
-	p.Start(7)
-	time.Sleep(2 * time.Second)
-	if err := rc.VerifyDomain(rd.ID); err != nil {
-		p.Warn(7, "pending — DNS may need time to propagate")
-	} else {
-		p.Done(7, "")
-	}
-
-	// Step 8: no per-sender registration needed for Resend
-	p.Start(8)
-	p.Done(8, ui.Dim.Render("n/a for Resend"))
-}
-
-// addDMARC publishes a starter DMARC policy as part of the DNS step. SPF and
-// DKIM alone prove a message is authentic; without a DMARC record many
-// receivers have no published policy to evaluate them against, which is the
-// usual reason correctly-authenticated mail still lands in spam.
-func addDMARC(p *ui.ProgressRunner, cf *cloudflare.Client, zoneID, domain, forwardTo string, managed *[]string) {
-	id, status, detail := mailsetup.EnsureDMARC(cf, zoneID, domain, forwardTo)
-	name := mailsetup.DMARCName(domain)
-	switch status {
-	case mailsetup.DMARCCreated:
-		recordManaged(managed, id)
-		p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render("TXT "+name+" — "+detail))
-	case mailsetup.DMARCExists:
-		p.SubRow(6, ui.IconSuccess+" "+ui.Dim.Render("TXT "+name+" — already set, left as is"))
-	case mailsetup.DMARCFailed:
-		p.SubRow(6, ui.IconWarn+" "+ui.Dim.Render("TXT "+name+" — "+detail))
-	}
-}
-
-// recordManaged appends a Cloudflare record ID to the managed set, ignoring
-// empty IDs from creates whose response could not be parsed.
-func recordManaged(managed *[]string, id string) {
-	if id == "" || managed == nil {
-		return
-	}
-	*managed = append(*managed, id)
-}
-
-// resendRecordName normalizes a Resend DNS record name into a fully-qualified
-// name for Cloudflare. Resend returns host-relative names (e.g. "send",
-// "resend._domainkey"), but occasionally the FQDN; handle both.
-func resendRecordName(name, domain string) string {
-	name = strings.TrimSuffix(name, ".")
-	if name == "" || name == "@" {
-		return domain
-	}
-	if name == domain || strings.HasSuffix(name, "."+domain) {
-		return name
-	}
-	return name + "." + domain
 }
 
 // successPanel renders the post-setup instructions, tailored to the provider.

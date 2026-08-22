@@ -5,10 +5,9 @@ import (
 	"strings"
 
 	"github.com/sislelabs/mailctl/internal"
-	"github.com/sislelabs/mailctl/internal/brevo"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
 	"github.com/sislelabs/mailctl/internal/mailsetup"
-	"github.com/sislelabs/mailctl/internal/resend"
+	"github.com/sislelabs/mailctl/internal/store"
 	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -34,7 +33,8 @@ func init() {
 func runRemove(cmd *cobra.Command, args []string) error {
 	domain := args[0]
 
-	cfg, err := internal.LoadConfig()
+	st := store.NewYAML()
+	cfg, err := st.Load()
 	if err != nil {
 		return err
 	}
@@ -44,10 +44,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("domain %s not found in config", domain)
 	}
 
-	providerName := "Brevo"
-	if cfg.SendingProvider() == internal.ProviderResend {
-		providerName = "Resend"
-	}
+	providerName := mailsetup.ProviderLabel(cfg)
 
 	if removeDryRun {
 		return previewRemove(cfg, d, providerName)
@@ -76,110 +73,17 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	provider := cfg.SendingProvider()
+	labels := mailsetup.RemoveStepLabels(providerName)
 
-	stepLabels := []string{
-		"Delete routing rules",
-		"Disable catch-all",
-		"Delete " + providerName + " domain",
-		"Delete DNS records created by mailctl",
-		"Remove from config",
-	}
-
-	err = ui.RunProgress("Removing "+ui.Error.Bold(true).Render(domain), stepLabels, func(p *ui.ProgressRunner) {
-		cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
-
-		// Step 0: Delete routing rules
-		p.Start(0)
-		rules, err := cf.ListRoutingRules(d.CloudflareZoneID)
-		if err != nil {
-			p.Warn(0, err.Error())
-		} else {
-			count := 0
-			for _, rule := range rules {
-				for _, m := range rule.Matchers {
-					if strings.HasSuffix(m.Value, "@"+domain) {
-						if err := cf.DeleteRoutingRule(d.CloudflareZoneID, rule.ID); err != nil {
-							p.SubRow(0, ui.IconError+" "+ui.Dim.Render(m.Value))
-						} else {
-							p.SubRow(0, ui.IconSuccess+" "+ui.Dim.Render(m.Value))
-							count++
-						}
-						break
-					}
-				}
-			}
-			p.Done(0, fmt.Sprintf("%d deleted", count))
-		}
-
-		// Step 1: Disable catch-all. The catch-all lives at its own endpoint and
-		// never appears in the rules list, so without this every address on the
-		// domain keeps forwarding after teardown.
-		p.Start(1)
-		if err := mailsetup.DisableCatchAll(cf, d.CloudflareZoneID); err != nil {
-			p.Warn(1, err.Error())
-		} else {
-			p.Done(1, ui.Dim.Render("*@"+domain+" no longer forwards"))
-		}
-
-		// Step 2: Delete the sending-provider domain
-		p.Start(2)
-		if provider == internal.ProviderResend {
-			rc := resend.NewClient(cfg.ResendAPIKey)
-			id := d.ResendDomainID
-			if id == "" {
-				// Fall back to a name lookup for domains added before the ID
-				// was persisted.
-				if rd, err := rc.FindDomainByName(domain); err == nil && rd != nil {
-					id = rd.ID
-				}
-			}
-			if id == "" {
-				p.Warn(2, "not found or already deleted")
-			} else if err := rc.DeleteDomain(id); err != nil {
-				p.Warn(2, "not found or already deleted")
-			} else {
-				p.Done(2, "")
-			}
-		} else {
-			bv := brevo.NewClient(cfg.BrevoAPIKey)
-			if err := bv.DeleteDomain(domain); err != nil {
-				p.Warn(2, "not found or already deleted")
-			} else {
-				p.Done(2, "")
-			}
-		}
-
-		// Step 3: Delete only the DNS records mailctl created.
-		p.Start(3)
-		result := mailsetup.TeardownDNS(cf, d.CloudflareZoneID, d.ManagedDNSRecordIDs)
-		if result.Untracked {
-			p.Warn(3, "skipped — no records tracked for this domain")
-			p.SubRow(3, ui.Dim.Render("Added before mailctl tracked record ownership."))
-			p.SubRow(3, ui.Dim.Render("Delete its SPF/DKIM records by hand so other services on"))
-			p.SubRow(3, ui.Dim.Render("this zone keep theirs."))
-		} else {
-			for _, line := range result.Deleted {
-				p.SubRow(3, ui.IconSuccess+" "+ui.Dim.Render(line))
-			}
-			for _, line := range result.Failed {
-				p.SubRow(3, ui.IconWarn+" "+ui.Dim.Render(line))
-			}
-			p.Done(3, fmt.Sprintf("%d deleted", len(result.Deleted)))
-		}
-
-		// Step 4: Remove from config
-		p.Start(4)
-		cfg.RemoveDomain(domain)
-		if err := internal.SaveConfig(cfg); err != nil {
-			p.Fail(4, err.Error())
-			return
-		}
-		p.Done(4, "")
+	var runErr error
+	uiErr := ui.RunProgress("Removing "+ui.Error.Bold(true).Render(domain), labels, func(p *ui.ProgressRunner) {
+		_, runErr = mailsetup.RemoveDomain(st, progressReporter(p), mailsetup.RemoveOptions{Domain: domain})
 	})
-
-	if err != nil {
-		return err
+	if uiErr != nil {
+		return uiErr
+	}
+	if runErr != nil {
+		return runErr
 	}
 
 	fmt.Println()

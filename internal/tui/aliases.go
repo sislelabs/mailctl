@@ -7,10 +7,9 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sislelabs/mailctl/internal"
-	"github.com/sislelabs/mailctl/internal/brevo"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
 	"github.com/sislelabs/mailctl/internal/mailsetup"
-	"github.com/sislelabs/mailctl/internal/resend"
+	"github.com/sislelabs/mailctl/internal/store"
 	"github.com/sislelabs/mailctl/internal/ui"
 )
 
@@ -280,57 +279,23 @@ func (m DeleteConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// deleteDomain tears the domain down through the shared flow. The dashboard
+// has nowhere to show step-by-step progress here, so it discards it and
+// reports only the outcome.
 func deleteDomain(cfg *internal.Config, domain string) tea.Msg {
-	d := cfg.FindDomain(domain)
-	if d == nil {
+	if cfg.FindDomain(domain) == nil {
 		return StatusMsg{Text: "Domain not found"}
 	}
 
-	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
-
-	// Delete routing rules
-	rules, err := cf.ListRoutingRules(d.CloudflareZoneID)
-	if err == nil {
-		for _, rule := range rules {
-			for _, m := range rule.Matchers {
-				if strings.HasSuffix(m.Value, "@"+domain) {
-					cf.DeleteRoutingRule(d.CloudflareZoneID, rule.ID)
-					break
-				}
-			}
-		}
+	if _, err := mailsetup.RemoveDomain(store.NewYAML(), mailsetup.NopReporter{}, mailsetup.RemoveOptions{
+		Domain: domain,
+	}); err != nil {
+		return StatusMsg{Text: "Error: " + err.Error()}
 	}
 
-	// Disable the catch-all. It lives at its own API endpoint and never appears
-	// in the rules list, so deleting the per-alias rules alone would leave every
-	// address on the domain still forwarding.
-	mailsetup.DisableCatchAll(cf, d.CloudflareZoneID)
-
-	// Delete the sending-provider domain
-	if cfg.SendingProvider() == internal.ProviderResend {
-		rc := resend.NewClient(cfg.ResendAPIKey)
-		id := d.ResendDomainID
-		if id == "" {
-			if rd, err := rc.FindDomainByName(domain); err == nil && rd != nil {
-				id = rd.ID
-			}
-		}
-		if id != "" {
-			rc.DeleteDomain(id)
-		}
-	} else {
-		bv := brevo.NewClient(cfg.BrevoAPIKey)
-		bv.DeleteDomain(domain)
-	}
-
-	// Delete only the DNS records mailctl created. Domains added before record
-	// ownership was tracked have none recorded, and TeardownDNS leaves DNS
-	// alone rather than guessing from record names — guessing would take out
-	// DKIM keys belonging to other mail services on the same zone.
-	mailsetup.TeardownDNS(cf, d.CloudflareZoneID, d.ManagedDNSRecordIDs)
-
+	// The caller holds its own copy of the config; keep it in step with what
+	// was just written.
 	cfg.RemoveDomain(domain)
-	internal.SaveConfig(cfg)
 
 	return DomainDeletedMsg{Domain: domain}
 }

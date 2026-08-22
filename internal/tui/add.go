@@ -3,17 +3,14 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sislelabs/mailctl/internal"
-	"github.com/sislelabs/mailctl/internal/brevo"
-	"github.com/sislelabs/mailctl/internal/cloudflare"
 	"github.com/sislelabs/mailctl/internal/mailsetup"
-	"github.com/sislelabs/mailctl/internal/resend"
+	"github.com/sislelabs/mailctl/internal/store"
 	"github.com/sislelabs/mailctl/internal/ui"
 )
 
@@ -105,20 +102,12 @@ func (m AddDomainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.phase = addPhaseRunning
-				providerLabel := "Brevo"
-				if m.cfg.SendingProvider() == internal.ProviderResend {
-					providerLabel = "Resend"
-				}
-				m.steps = []addStep{
-					{label: "Look up Cloudflare zone"},
-					{label: "Enable email routing"},
-					{label: "Verify destination address"},
-					{label: "Create routing rules"},
-					{label: "Add domain to " + providerLabel},
-					{label: "Add DNS records"},
-					{label: "Authenticate domain"},
-					{label: "Create senders"},
-					{label: "Save config"},
+				// Steps come from the shared flow so the dashboard cannot
+				// drift out of step with what actually runs.
+				labels := mailsetup.AddStepLabels(mailsetup.ProviderLabel(m.cfg))
+				m.steps = make([]addStep, len(labels))
+				for i, label := range labels {
+					m.steps[i] = addStep{label: label}
 				}
 				return m, tea.Batch(m.spinner.Tick, m.runAdd(m.domain, aliases))
 			case "shift+tab":
@@ -173,252 +162,59 @@ func (m AddDomainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// runAdd drives the shared setup flow. Progress is collected and delivered as
+// one batch: a tea.Cmd cannot emit intermediate messages, so the steps render
+// on completion rather than live. The adapter shape means the flow itself is
+// unaware of that limitation.
 func (m AddDomainModel) runAdd(domain, aliasStr string) tea.Cmd {
-	cfg := m.cfg
 	return func() tea.Msg {
-		send := func(step, status int, detail, subRow string) {
-			// We can't send tea.Msg from here directly in a clean way,
-			// but we'll use the program's Send method via a channel approach.
-			// For simplicity, we'll batch all updates at the end.
-		}
-		_ = send
+		var updates []addProgressMsg
 
-		// We need to use a channel-based approach
-		// Actually, let's use a simpler approach: return a batch of commands
-		return runAddDomain(cfg, domain, aliasStr)
+		rep := mailsetup.FuncReporter{
+			OnStep: func(index int, status mailsetup.StepStatus, detail string) {
+				updates = append(updates, addProgressMsg{
+					step:   index,
+					status: int(status),
+					detail: ui.Dim.Render(detail),
+				})
+			},
+			OnNote: func(index int, level mailsetup.NoteLevel, text string) {
+				updates = append(updates, addProgressMsg{
+					step:   index,
+					status: -1,
+					subRow: noteRowTUI(level, text),
+				})
+			},
+		}
+
+		_, err := mailsetup.AddDomain(store.NewYAML(), rep, mailsetup.AddOptions{
+			Domain:  domain,
+			Aliases: strings.Split(aliasStr, ","),
+		})
+
+		errStr := ""
+		if err != nil {
+			errStr = err.Error()
+		}
+		return addBatchMsg{msgs: toMsgs(updates, domain, errStr)}
+	}
+}
+
+// noteRowTUI styles a detail line. mailsetup emits levels rather than styled
+// text, so every icon and colour choice lives here.
+func noteRowTUI(level mailsetup.NoteLevel, text string) string {
+	switch level {
+	case mailsetup.NoteOK:
+		return ui.IconSuccess + " " + ui.Dim.Render(text)
+	case mailsetup.NoteWarn:
+		return ui.IconWarn + " " + ui.Dim.Render(text)
+	default:
+		return ui.IconError + " " + ui.Error.Render(text)
 	}
 }
 
 type addBatchMsg struct {
 	msgs []tea.Msg
-}
-
-func runAddDomain(cfg *internal.Config, domain, aliasStr string) tea.Msg {
-	// Since we can't easily send intermediate messages from a cmd,
-	// we'll collect all progress and send it as a batch
-	var updates []addProgressMsg
-
-	p := func(step, status int, detail string) {
-		updates = append(updates, addProgressMsg{step: step, status: status, detail: detail})
-	}
-	sub := func(step int, row string) {
-		updates = append(updates, addProgressMsg{step: step, status: -1, subRow: row})
-	}
-
-	aliases := strings.Split(aliasStr, ",")
-	for i := range aliases {
-		aliases[i] = strings.TrimSpace(aliases[i])
-	}
-	forwardTo := cfg.DefaultForwardTo
-
-	provider := cfg.SendingProvider()
-	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
-	var resendDomainID string
-	var managedRecordIDs []string
-
-	// Step 0: Find zone
-	p(0, 1, "")
-	zone, err := cf.GetZoneByName(domain)
-	if err != nil {
-		p(0, 4, "not found")
-		return addBatchMsg{msgs: toMsgs(updates, domain, "Zone not found — is the domain in Cloudflare?")}
-	}
-	p(0, 2, ui.Dim.Render(zone.ID))
-
-	// Step 1: Enable routing (delete conflicting MX records first)
-	p(1, 1, "")
-	mxRecords, _ := cf.ListDNSRecords(zone.ID, "MX")
-	for _, mx := range mxRecords {
-		if mx.Name == domain {
-			cf.DeleteDNSRecord(zone.ID, mx.ID)
-		}
-	}
-	if err := cf.EnableEmailRouting(zone.ID); err != nil {
-		p(1, 3, err.Error())
-	} else {
-		p(1, 2, "")
-	}
-
-	// Step 2: Verify destination address
-	p(2, 1, "")
-	destVerified := false
-	if addrs, err := cf.ListDestinationAddresses(zone.Account.ID); err == nil {
-		for _, a := range addrs {
-			if a.Email == forwardTo && a.Verified != "" {
-				destVerified = true
-				break
-			}
-		}
-	}
-	if destVerified {
-		p(2, 2, ui.Dim.Render(forwardTo))
-	} else {
-		cf.CreateDestinationAddress(zone.Account.ID, forwardTo)
-		p(2, 3, "verification email sent — check inbox")
-	}
-
-	// Step 3: Routing rules
-	p(3, 1, "")
-	var cfAliases []internal.Alias
-	ruleErrors := 0
-	for _, alias := range aliases {
-		addr := fmt.Sprintf("%s@%s", alias, domain)
-		rule := cloudflare.RoutingRule{
-			Name: fmt.Sprintf("Forward %s", addr), Enabled: true,
-			Matchers: []cloudflare.RuleMatcher{{Type: "literal", Field: "to", Value: addr}},
-			Actions:  []cloudflare.RuleAction{{Type: "forward", Value: []string{forwardTo}}},
-		}
-		if err := cf.CreateRoutingRule(zone.ID, rule); err != nil {
-			sub(3, ui.IconError+" "+ui.Error.Render(addr)+" "+ui.Dim.Render(err.Error()))
-			ruleErrors++
-		} else {
-			sub(3, ui.IconSuccess+" "+ui.Dim.Render(addr+" → "+forwardTo))
-		}
-		cfAliases = append(cfAliases, internal.Alias{Alias: alias, ForwardTo: []string{forwardTo}})
-	}
-	if ruleErrors > 0 {
-		p(3, 3, fmt.Sprintf("%d failed", ruleErrors))
-	} else {
-		p(3, 2, fmt.Sprintf("%d rules", len(aliases)))
-	}
-
-	// Steps 4–7: register the domain with the sending provider.
-	if provider == internal.ProviderResend {
-		resendDomainID = addResendTUI(cf, resend.NewClient(cfg.ResendAPIKey), zone.ID, domain, forwardTo, p, sub, &managedRecordIDs)
-	} else {
-		addBrevoTUI(cf, brevo.NewClient(cfg.BrevoAPIKey), zone.ID, domain, forwardTo, aliases, p, sub, &managedRecordIDs)
-	}
-
-	// Step 8: Save
-	p(8, 1, "")
-	cfg.AddDomain(domain, zone.ID, cfAliases)
-	if d := cfg.FindDomain(domain); d != nil {
-		d.ResendDomainID = resendDomainID
-		d.ManagedDNSRecordIDs = managedRecordIDs
-	}
-	if err := internal.SaveConfig(cfg); err != nil {
-		p(8, 4, err.Error())
-		return addBatchMsg{msgs: toMsgs(updates, domain, err.Error())}
-	}
-	p(8, 2, "")
-
-	return addBatchMsg{msgs: toMsgs(updates, domain, "")}
-}
-
-// addBrevoTUI runs the Brevo registration/DNS/auth/sender steps (4–7).
-func addBrevoTUI(cf *cloudflare.Client, bv *brevo.Client, zoneID, domain, forwardTo string, aliases []string, p func(int, int, string), sub func(int, string), managed *[]string) {
-	p(4, 1, "")
-	brevoDomain, err := bv.AddDomain(domain)
-	if err != nil {
-		p(4, 3, "failed")
-		sub(4, ui.Dim.Render(err.Error()))
-		p(5, 3, "skipped")
-		p(6, 3, "skipped")
-		p(7, 3, "skipped")
-		return
-	}
-	p(4, 2, "")
-
-	// Step 5: DNS records
-	p(5, 1, "")
-	for _, rec := range brevoDomain.FlatDNSRecords() {
-		name := brevo.FullRecordName(rec, domain)
-		cfRec := cloudflare.DNSRecord{Type: rec.Type, Name: name, Content: rec.Value, TTL: 3600}
-		id, err := cf.CreateDNSRecord(zoneID, cfRec)
-		if err != nil {
-			sub(5, ui.IconWarn+" "+ui.Dim.Render(rec.Type+" "+name+" — "+err.Error()))
-			continue
-		}
-		recordManagedTUI(managed, id)
-		sub(5, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
-	}
-	addDMARCTUI(cf, zoneID, domain, forwardTo, sub, managed)
-	p(5, 2, "")
-
-	// Step 6: Authenticate
-	p(6, 1, "")
-	time.Sleep(2 * time.Second)
-	if err := bv.AuthenticateDomain(domain); err != nil {
-		p(6, 3, "pending — DNS may need time")
-	} else {
-		p(6, 2, "")
-	}
-
-	// Step 7: Create senders
-	p(7, 1, "")
-	for _, alias := range aliases {
-		addr := fmt.Sprintf("%s@%s", alias, domain)
-		senderName := strings.ToUpper(alias[:1]) + alias[1:]
-		if err := bv.CreateSender(senderName, addr); err != nil {
-			sub(7, ui.IconWarn+" "+ui.Dim.Render(addr+" — "+err.Error()))
-		} else {
-			sub(7, ui.IconSuccess+" "+ui.Dim.Render(addr))
-		}
-	}
-	p(7, 2, "")
-}
-
-// addResendTUI runs the Resend registration/DNS/verify steps (4–7) and returns
-// the created domain's Resend ID (empty on failure). Resend has no per-sender
-// objects, so step 7 is a no-op.
-func addResendTUI(cf *cloudflare.Client, rc *resend.Client, zoneID, domain, forwardTo string, p func(int, int, string), sub func(int, string), managed *[]string) string {
-	p(4, 1, "")
-	rd, err := rc.AddDomain(domain)
-	if err != nil {
-		p(4, 3, "failed")
-		sub(4, ui.Dim.Render(err.Error()))
-		p(5, 3, "skipped")
-		p(6, 3, "skipped")
-		p(7, 2, ui.Dim.Render("n/a for Resend"))
-		return ""
-	}
-	p(4, 2, ui.Dim.Render(rd.ID))
-
-	// Step 5: DNS records
-	p(5, 1, "")
-	for _, rec := range rd.Records {
-		name := resendRecordNameTUI(rec.Name, domain)
-		cfRec := cloudflare.DNSRecord{Type: rec.Type, Name: name, Content: rec.Value, TTL: 3600}
-		if strings.EqualFold(rec.Type, "MX") && rec.Priority > 0 {
-			prio := rec.Priority
-			cfRec.Priority = &prio
-		}
-		id, err := cf.CreateDNSRecord(zoneID, cfRec)
-		if err != nil {
-			sub(5, ui.IconWarn+" "+ui.Dim.Render(rec.Type+" "+name+" — "+err.Error()))
-			continue
-		}
-		recordManagedTUI(managed, id)
-		sub(5, ui.IconSuccess+" "+ui.Dim.Render(rec.Type+" "+name))
-	}
-	addDMARCTUI(cf, zoneID, domain, forwardTo, sub, managed)
-	p(5, 2, "")
-
-	// Step 6: Verify
-	p(6, 1, "")
-	time.Sleep(2 * time.Second)
-	if err := rc.VerifyDomain(rd.ID); err != nil {
-		p(6, 3, "pending — DNS may need time")
-	} else {
-		p(6, 2, "")
-	}
-
-	// Step 7: no per-sender registration for Resend
-	p(7, 2, ui.Dim.Render("n/a for Resend"))
-	return rd.ID
-}
-
-// resendRecordNameTUI mirrors resendRecordName in the cmd package: it turns a
-// Resend host-relative record name into a fully-qualified Cloudflare name.
-func resendRecordNameTUI(name, domain string) string {
-	name = strings.TrimSuffix(name, ".")
-	if name == "" || name == "@" {
-		return domain
-	}
-	if name == domain || strings.HasSuffix(name, "."+domain) {
-		return name
-	}
-	return name + "." + domain
 }
 
 func toMsgs(updates []addProgressMsg, domain, errStr string) []tea.Msg {
@@ -429,8 +225,6 @@ func toMsgs(updates []addProgressMsg, domain, errStr string) []tea.Msg {
 	msgs[len(updates)] = addDoneMsg{domain: domain, err: errStr}
 	return msgs
 }
-
-// We need a way to send batched messages. Let's handle addBatchMsg in Update.
 
 func (m AddDomainModel) View() string {
 	var b strings.Builder
@@ -527,25 +321,3 @@ func (m AddDomainModel) View() string {
 // what the CLI's add path does. Without a DMARC record, receivers have no
 // published policy to evaluate SPF and DKIM against, which is the usual reason
 // authenticated mail still lands in spam.
-func addDMARCTUI(cf *cloudflare.Client, zoneID, domain, forwardTo string, sub func(int, string), managed *[]string) {
-	id, status, detail := mailsetup.EnsureDMARC(cf, zoneID, domain, forwardTo)
-	name := mailsetup.DMARCName(domain)
-	switch status {
-	case mailsetup.DMARCCreated:
-		recordManagedTUI(managed, id)
-		sub(5, ui.IconSuccess+" "+ui.Dim.Render("TXT "+name+" — "+detail))
-	case mailsetup.DMARCExists:
-		sub(5, ui.IconSuccess+" "+ui.Dim.Render("TXT "+name+" — already set, left as is"))
-	case mailsetup.DMARCFailed:
-		sub(5, ui.IconWarn+" "+ui.Dim.Render("TXT "+name+" — "+detail))
-	}
-}
-
-// recordManagedTUI appends a Cloudflare record ID to the managed set so that
-// teardown deletes only records mailctl created.
-func recordManagedTUI(managed *[]string, id string) {
-	if id == "" || managed == nil {
-		return
-	}
-	*managed = append(*managed, id)
-}

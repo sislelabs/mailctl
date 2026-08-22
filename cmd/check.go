@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/brevo"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
+	"github.com/sislelabs/mailctl/internal/mailsetup"
 	"github.com/sislelabs/mailctl/internal/resend"
 	"github.com/sislelabs/mailctl/internal/ui"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
 
@@ -262,7 +263,7 @@ func checkResendDomain(cfg *internal.Config, d *internal.DomainConfig) string {
 			icon = ui.IconSuccess
 			statusText = "verified"
 		}
-		name := resendRecordName(rec.Name, d.Domain)
+		name := mailsetup.ResendRecordName(rec.Name, d.Domain)
 		rows = append(rows, fmt.Sprintf("    %s %s %s %s",
 			icon,
 			ui.Dim.Render(rec.Type),
