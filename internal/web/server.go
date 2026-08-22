@@ -73,8 +73,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", s.handleOverview)
 	mux.HandleFunc("GET /audit", s.handleAudit)
 	mux.HandleFunc("GET /domains/{domain}", s.handleDomain)
+	mux.HandleFunc("GET /domains/{domain}/aliases", s.handleAliases)
 	mux.HandleFunc("POST /domains/{domain}/aliases", s.handleAddAlias)
 	mux.HandleFunc("DELETE /domains/{domain}/aliases/{alias}", s.handleRemoveAlias)
+	mux.HandleFunc("POST /domains/{domain}/aliases/{alias}/forward", s.handleRepointAlias)
 	return mux
 }
 
@@ -180,6 +182,11 @@ type domainData struct {
 	Domain    *internal.DomainConfig
 	ForwardTo string
 	Error     string
+	Notice    string
+	// Aliases is read live from Cloudflare rather than from config, which is
+	// only a cache and goes stale as soon as a rule is edited elsewhere.
+	Aliases      []mailsetup.AliasView
+	AliasesError string
 }
 
 func (s *Server) handleDomain(w http.ResponseWriter, r *http.Request) {
@@ -195,6 +202,9 @@ func (s *Server) handleDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The alias list needs a live Cloudflare read, so the page ships without it
+	// and htmx fills it in. Blocking here would make the panel feel broken on a
+	// slow link and unusable without one.
 	s.render(w, "domain.html", domainData{Title: d.Domain, Domain: d, ForwardTo: cfg.DefaultForwardTo})
 }
 
@@ -221,7 +231,34 @@ func (s *Server) handleRemoveAlias(w http.ResponseWriter, r *http.Request) {
 	s.renderAliases(w, domain, removeErr)
 }
 
+// handleAliases renders the live alias list htmx pulls in.
+func (s *Server) handleAliases(w http.ResponseWriter, r *http.Request) {
+	s.renderAliases(w, r.PathValue("domain"), "")
+}
+
+// handleRepointAlias changes where one address forwards.
+func (s *Server) handleRepointAlias(w http.ResponseWriter, r *http.Request) {
+	domain := r.PathValue("domain")
+
+	notice, errMsg := "", ""
+	result, err := mailsetup.RepointAlias(s.store, domain, r.PathValue("alias"), r.FormValue("forward_to"))
+	switch {
+	case err != nil:
+		errMsg = err.Error()
+	case result.DestinationCreated:
+		notice = "Confirmation email sent to " + r.FormValue("forward_to") +
+			" — Cloudflare will not deliver there until it is confirmed."
+	case !result.DestinationVerified:
+		notice = r.FormValue("forward_to") + " is registered but not yet confirmed — mail will not be delivered until it is."
+	}
+	s.renderAliasesWith(w, domain, errMsg, notice)
+}
+
 func (s *Server) renderAliases(w http.ResponseWriter, domain, errMsg string) {
+	s.renderAliasesWith(w, domain, errMsg, "")
+}
+
+func (s *Server) renderAliasesWith(w http.ResponseWriter, domain, errMsg, notice string) {
 	cfg, err := s.store.Load()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -229,8 +266,14 @@ func (s *Server) renderAliases(w http.ResponseWriter, domain, errMsg string) {
 	}
 	d := cfg.FindDomain(domain)
 	if d == nil {
-		http.NotFound(w, nil)
+		http.NotFound(w, &http.Request{})
 		return
 	}
-	s.renderFragment(w, "aliases", domainData{Domain: d, ForwardTo: cfg.DefaultForwardTo, Error: errMsg})
+	data := domainData{Domain: d, ForwardTo: cfg.DefaultForwardTo, Error: errMsg, Notice: notice}
+	if views, err := mailsetup.ListAliases(cfg, d); err != nil {
+		data.AliasesError = err.Error()
+	} else {
+		data.Aliases = views
+	}
+	s.renderFragment(w, "aliases", data)
 }

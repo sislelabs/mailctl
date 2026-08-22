@@ -1,7 +1,9 @@
 {{define "content"}}
 <p class="muted" style="font-size:.85rem"><a href="/">← all domains</a></p>
 <h2 class="mono">{{.Domain.Domain}}</h2>
-{{template "aliases" .}}
+<div hx-get="/domains/{{.Domain.Domain}}/aliases" hx-trigger="load" hx-swap="outerHTML">
+  <div class="card"><div class="empty">Reading live routing from Cloudflare…</div></div>
+</div>
 
 <h2>Details</h2>
 <div class="card scroll">

@@ -136,3 +136,29 @@ func TestSameRecordContent(t *testing.T) {
 		}
 	}
 }
+
+func TestSameAddresses(t *testing.T) {
+	same := [][2][]string{
+		{{"a@x.com"}, {"a@x.com"}},
+		{{"A@X.com"}, {"a@x.com"}},
+		{{" a@x.com "}, {"a@x.com"}},
+		{{"a@x.com", "b@x.com"}, {"b@x.com", "a@x.com"}},
+		{{}, {}},
+	}
+	for _, c := range same {
+		if !sameAddresses(c[0], c[1]) {
+			t.Errorf("sameAddresses(%v, %v) = false, want true", c[0], c[1])
+		}
+	}
+
+	different := [][2][]string{
+		{{"a@x.com"}, {"b@x.com"}},
+		{{"a@x.com"}, {}},
+		{{"a@x.com"}, {"a@x.com", "b@x.com"}},
+	}
+	for _, c := range different {
+		if sameAddresses(c[0], c[1]) {
+			t.Errorf("sameAddresses(%v, %v) = true, want false", c[0], c[1])
+		}
+	}
+}

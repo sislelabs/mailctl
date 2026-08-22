@@ -61,11 +61,29 @@ func TestDomainPageRenders(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "hello@example.com") {
-		t.Error("domain page missing its alias")
+	if !strings.Contains(body, "example.com") {
+		t.Error("domain page missing the domain")
 	}
 	if !strings.Contains(body, "not registered") {
 		t.Error("a domain with no Resend ID should say so")
+	}
+	// Addresses are read live from Cloudflare, so the page ships without them
+	// and htmx fills them in. Rendering the cached config values instead would
+	// show a destination that may no longer be where mail goes.
+	if !strings.Contains(body, `hx-get="/domains/example.com/aliases"`) {
+		t.Error("domain page should defer the alias list over htmx")
+	}
+}
+
+func TestAliasListDegradesWithoutCloudflare(t *testing.T) {
+	// The test config carries no usable token. The fragment must still render
+	// and say so, rather than erroring the whole page.
+	rec := get(t, testServer(t), "/domains/example.com/aliases")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Could not read live routing") {
+		t.Errorf("expected a degraded message, got:\n%s", rec.Body.String())
 	}
 }
 

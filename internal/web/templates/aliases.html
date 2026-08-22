@@ -1,30 +1,45 @@
 {{define "aliases"}}
 <div id="aliases">
 <div class="card">
+{{if .AliasesError}}
+  <div class="err" style="padding:.9rem">Could not read live routing: {{.AliasesError}}</div>
+{{else}}
 <table>
-  <tr><th>Address</th><th>Forwards to</th><th></th></tr>
-  {{range .Domain.Aliases}}
+  <tr><th>Address</th><th>Delivers to</th><th></th></tr>
+  {{range .Aliases}}
   <tr>
-    <td class="mono">{{.Alias}}@{{$.Domain.Domain}}</td>
-    <td class="mono muted">{{join .ForwardTo ", "}}</td>
+    <td class="mono">
+      {{.Address}}
+      {{if .Untracked}}<br><span class="pill info">not in config</span>{{end}}
+      {{if .Drifted}}<br><span class="pill warn">config says {{join .ConfigSays ", "}}</span>{{end}}
+    </td>
+    <td>
+      <form class="repoint" hx-post="/domains/{{$.Domain.Domain}}/aliases/{{.Alias}}/forward"
+            hx-target="#aliases" hx-swap="outerHTML">
+        <input type="text" name="forward_to" class="mono" value="{{join .ForwardTo ", "}}" aria-label="destination for {{.Address}}">
+        <button type="submit" class="ghost save">save</button>
+      </form>
+    </td>
     <td style="text-align:right">
       <button class="ghost"
         hx-delete="/domains/{{$.Domain.Domain}}/aliases/{{.Alias}}"
         hx-target="#aliases" hx-swap="outerHTML"
-        hx-confirm="Delete {{.Alias}}@{{$.Domain.Domain}}? This removes its Cloudflare routing rule.">remove</button>
+        hx-confirm="Delete {{.Address}}? This removes its Cloudflare routing rule.">remove</button>
     </td>
   </tr>
   {{else}}
-  <tr><td colspan="3" class="empty">No aliases yet.</td></tr>
+  <tr><td colspan="3" class="empty">No addresses routing on this domain.</td></tr>
   {{end}}
 </table>
+{{end}}
 <form class="inline" hx-post="/domains/{{.Domain.Domain}}/aliases"
       hx-target="#aliases" hx-swap="outerHTML">
   <input type="text" name="alias" placeholder="billing" required>
   <input type="text" name="forward_to" placeholder="{{.ForwardTo}} (default)">
-  <button type="submit">Add alias</button>
+  <button type="submit">Add address</button>
 </form>
 {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+{{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
 </div>
 </div>
 {{end}}
