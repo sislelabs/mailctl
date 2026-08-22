@@ -221,3 +221,21 @@ func TestRegisterStepLabelsCoverEveryIndex(t *testing.T) {
 		}
 	}
 }
+
+func TestResendRecordNameUsesTheZoneApex(t *testing.T) {
+	// Resend returns names relative to the registrable domain, so a sending
+	// subdomain gets back "resend._domainkey.info". Resolving that against the
+	// sending domain instead of the zone apex doubles the label and produces
+	// resend._domainkey.info.info.getsaiton.com.
+	got := ResendRecordName("resend._domainkey.info", "getsaiton.com")
+	if got != "resend._domainkey.info.getsaiton.com" {
+		t.Errorf("got %q", got)
+	}
+	if got := ResendRecordName("send.info", "getsaiton.com"); got != "send.info.getsaiton.com" {
+		t.Errorf("got %q", got)
+	}
+	// Resolving against the sending domain is the bug this guards.
+	if bad := ResendRecordName("resend._domainkey.info", "info.getsaiton.com"); bad != "resend._domainkey.info.info.getsaiton.com" {
+		t.Errorf("expected the doubled form from the wrong base, got %q", bad)
+	}
+}

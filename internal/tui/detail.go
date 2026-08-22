@@ -154,7 +154,7 @@ func (m DetailModel) fetch() tea.Cmd {
 					}
 					data.sendDNS = append(data.sendDNS, dnsRecordInfo{
 						recType: rec.Type,
-						name:    mailsetup.ResendRecordName(rec.Name, d.Domain),
+						name:    mailsetup.ResendRecordName(rec.Name, d.ZoneName()),
 						status:  state,
 					})
 				}

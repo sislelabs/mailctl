@@ -239,6 +239,8 @@ func addResend(cf *cloudflare.Client, rc *resend.Client, rep Reporter, steps pro
 
 	rep.Step(steps.DNS, StepRunning, "")
 	for _, rec := range rd.Records {
+		// A mailbox domain is always its own zone apex — add rejects subdomains —
+		// so the domain is the right base for record names here.
 		name := ResendRecordName(rec.Name, domain)
 		cfRec := cloudflare.DNSRecord{
 			Type:    rec.Type,

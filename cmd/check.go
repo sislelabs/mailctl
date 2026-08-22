@@ -266,7 +266,7 @@ func checkResendDomain(cfg *internal.Config, d *internal.DomainConfig) (string, 
 			icon = ui.IconSuccess
 			statusText = "verified"
 		}
-		name := mailsetup.ResendRecordName(rec.Name, d.Domain)
+		name := mailsetup.ResendRecordName(rec.Name, d.ZoneName())
 		rows = append(rows, fmt.Sprintf("    %s %s %s %s",
 			icon,
 			ui.Dim.Render(rec.Type),
