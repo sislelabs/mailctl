@@ -234,3 +234,78 @@ func TestRemoveConfirmForSendingDomainOmitsRouting(t *testing.T) {
 		t.Error("expected the sending-domain wording")
 	}
 }
+
+func sendingServer(t *testing.T) http.Handler {
+	t.Helper()
+	cfg := &internal.Config{Provider: internal.ProviderResend, DefaultForwardTo: "you@example.com"}
+	cfg.AddSendingDomain("info.example.com", "zone1", "example.com")
+	srv, err := NewServer(&store.Memory{Config: cfg})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return srv.Handler()
+}
+
+func TestSendingDomainPageHasNoAliasUI(t *testing.T) {
+	rec := get(t, sendingServer(t), "/domains/info.example.com")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// A sending domain has no addresses; offering an alias editor would invite
+	// creating routing rules on a zone that serves unrelated mail.
+	if strings.Contains(body, "/aliases") {
+		t.Error("sending domain page must not load the alias editor")
+	}
+	if !strings.Contains(body, "sending only") {
+		t.Error("expected the kind to be labelled")
+	}
+	if !strings.Contains(body, "/dns") {
+		t.Error("expected the sending DNS view")
+	}
+}
+
+func TestAliasRoutesRefuseSendingDomains(t *testing.T) {
+	h := sendingServer(t)
+
+	// Hiding the UI is not a control. Every mutating alias route must refuse.
+	cases := []struct{ method, path, body string }{
+		{"GET", "/domains/info.example.com/aliases", ""},
+		{"POST", "/domains/info.example.com/aliases", "alias=hello"},
+		{"DELETE", "/domains/info.example.com/aliases/hello", ""},
+		{"POST", "/domains/info.example.com/aliases/hello/forward", "forward_to=x@y.com"},
+	}
+	for _, c := range cases {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s %s = %d, want 400", c.method, c.path, rec.Code)
+		}
+	}
+}
+
+func TestMailboxDomainStillHasAliasUI(t *testing.T) {
+	rec := get(t, testServer(t), "/domains/example.com")
+	if !strings.Contains(rec.Body.String(), "/domains/example.com/aliases") {
+		t.Error("mailbox domain lost its alias editor")
+	}
+}
+
+func TestOverviewSeparatesKinds(t *testing.T) {
+	rec := get(t, sendingServer(t), "/")
+	body := rec.Body.String()
+	if !strings.Contains(body, "Mailbox domains") || !strings.Contains(body, "Sending domains") {
+		t.Error("overview should list the two kinds separately")
+	}
+	// The sending domain must appear under its own heading, not among mailboxes.
+	mailboxIdx := strings.Index(body, "Mailbox domains")
+	sendingIdx := strings.Index(body, "Sending domains")
+	domainIdx := strings.Index(body, "info.example.com")
+	if !(domainIdx > sendingIdx && sendingIdx > mailboxIdx) {
+		t.Errorf("sending domain listed in the wrong section (mailbox=%d sending=%d domain=%d)",
+			mailboxIdx, sendingIdx, domainIdx)
+	}
+}

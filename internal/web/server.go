@@ -54,7 +54,7 @@ func NewServer(st store.Store) (*Server, error) {
 		t, err := template.New(page).Funcs(funcs).ParseFS(templateFS,
 			"templates/layout.html", "templates/aliases.html", "templates/audit.html",
 			"templates/job.html", "templates/addform.html", "templates/removeconfirm.html",
-			"templates/"+page)
+			"templates/sendingdns.html", "templates/"+page)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s: %w", page, err)
 		}
@@ -63,7 +63,7 @@ func NewServer(st store.Store) (*Server, error) {
 
 	frags, err := template.New("frags").Funcs(funcs).ParseFS(templateFS,
 		"templates/aliases.html", "templates/audit.html", "templates/job.html",
-		"templates/addform.html", "templates/removeconfirm.html")
+		"templates/addform.html", "templates/removeconfirm.html", "templates/sendingdns.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse fragments: %w", err)
 	}
@@ -80,6 +80,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /audit", s.handleAudit)
 	mux.HandleFunc("GET /domains/{domain}", s.handleDomain)
 	mux.HandleFunc("GET /domains/{domain}/aliases", s.handleAliases)
+	mux.HandleFunc("GET /domains/{domain}/dns", s.handleSendingDNS)
 	mux.HandleFunc("POST /domains/{domain}/aliases", s.handleAddAlias)
 	mux.HandleFunc("DELETE /domains/{domain}/aliases/{alias}", s.handleRemoveAlias)
 	mux.HandleFunc("POST /domains/{domain}/aliases/{alias}/forward", s.handleRepointAlias)
@@ -123,9 +124,12 @@ func (s *Server) renderFragment(w http.ResponseWriter, name string, data any) {
 }
 
 type overviewData struct {
-	Title   string
-	Config  *internal.Config
-	Domains []domainRow
+	Title  string
+	Config *internal.Config
+	// Mailbox and Sending are listed separately: they are managed by
+	// different commands and only one of them has addresses to show.
+	Mailbox []domainRow
+	Sending []domainRow
 	// AddForm is passed to the shared add-domain fragment, which the same
 	// handler re-renders on validation failure.
 	AddForm addFormData
@@ -136,6 +140,8 @@ type domainRow struct {
 	Aliases   []internal.Alias
 	ForwardTo string
 	Tracked   int
+	Sending   bool
+	ZoneName  string
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -149,16 +155,22 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	for i := range cfg.Domains {
 		d := &cfg.Domains[i]
 		row := domainRow{
-			Domain:  d.Domain,
-			Aliases: d.Aliases,
-			Tracked: len(d.ManagedDNSRecordIDs),
+			Domain:   d.Domain,
+			Aliases:  d.Aliases,
+			Tracked:  len(d.ManagedDNSRecordIDs),
+			Sending:  d.IsSending(),
+			ZoneName: d.ZoneName(),
 		}
 		if len(d.Aliases) > 0 && len(d.Aliases[0].ForwardTo) > 0 {
 			row.ForwardTo = d.Aliases[0].ForwardTo[0]
 		} else {
 			row.ForwardTo = cfg.DefaultForwardTo
 		}
-		data.Domains = append(data.Domains, row)
+		if row.Sending {
+			data.Sending = append(data.Sending, row)
+		} else {
+			data.Mailbox = append(data.Mailbox, row)
+		}
 	}
 
 	s.render(w, "overview.html", data)
@@ -225,6 +237,9 @@ func (s *Server) handleDomain(w http.ResponseWriter, r *http.Request) {
 // the fragment htmx swaps in.
 func (s *Server) handleAddAlias(w http.ResponseWriter, r *http.Request) {
 	domain := r.PathValue("domain")
+	if !s.requireMailbox(w, domain) {
+		return
+	}
 	alias := strings.TrimSpace(r.FormValue("alias"))
 
 	addErr := ""
@@ -236,6 +251,9 @@ func (s *Server) handleAddAlias(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRemoveAlias(w http.ResponseWriter, r *http.Request) {
 	domain := r.PathValue("domain")
+	if !s.requireMailbox(w, domain) {
+		return
+	}
 
 	removeErr := ""
 	if err := mailsetup.RemoveAlias(s.store, domain, r.PathValue("alias")); err != nil {
@@ -246,12 +264,19 @@ func (s *Server) handleRemoveAlias(w http.ResponseWriter, r *http.Request) {
 
 // handleAliases renders the live alias list htmx pulls in.
 func (s *Server) handleAliases(w http.ResponseWriter, r *http.Request) {
-	s.renderAliases(w, r.PathValue("domain"), "")
+	domain := r.PathValue("domain")
+	if !s.requireMailbox(w, domain) {
+		return
+	}
+	s.renderAliases(w, domain, "")
 }
 
 // handleRepointAlias changes where one address forwards.
 func (s *Server) handleRepointAlias(w http.ResponseWriter, r *http.Request) {
 	domain := r.PathValue("domain")
+	if !s.requireMailbox(w, domain) {
+		return
+	}
 
 	notice, errMsg := "", ""
 	result, err := mailsetup.RepointAlias(s.store, domain, r.PathValue("alias"), r.FormValue("forward_to"))
@@ -307,8 +332,29 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	domain := strings.TrimSpace(r.FormValue("domain"))
+
+	// A sending domain takes a different path entirely: register publishes only
+	// what sending needs and never touches routing.
+	if r.FormValue("kind") == internal.KindSending {
+		if cfg.FindDomain(domain) != nil {
+			s.renderFragment(w, "addform", addFormData{Config: cfg, Error: domain + " is already configured"})
+			return
+		}
+		job := newJob("register", domain, mailsetup.RegisterStepLabels(mailsetup.ProviderLabel(cfg)))
+		if !s.jobs.start(job, func() error {
+			_, err := mailsetup.RegisterDomain(s.store, job, mailsetup.RegisterOptions{Domain: domain})
+			return err
+		}) {
+			s.renderFragment(w, "addform", addFormData{Config: cfg, Error: "another domain operation is already running"})
+			return
+		}
+		s.renderJob(w, job)
+		return
+	}
+
 	opts := mailsetup.AddOptions{
-		Domain:    strings.TrimSpace(r.FormValue("domain")),
+		Domain:    domain,
 		Aliases:   strings.Split(r.FormValue("aliases"), ","),
 		ForwardTo: strings.TrimSpace(r.FormValue("forward_to")),
 	}
@@ -454,4 +500,54 @@ func noteClass(l mailsetup.NoteLevel) string {
 	default:
 		return "info"
 	}
+}
+
+type sendingDNSData struct {
+	Domain  *internal.DomainConfig
+	Records []mailsetup.SendingRecord
+	Error   string
+}
+
+// handleSendingDNS renders the provider's required records checked against the
+// zone. It needs two API calls, so the page loads without it.
+func (s *Server) handleSendingDNS(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.store.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	d := cfg.FindDomain(r.PathValue("domain"))
+	if d == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	data := sendingDNSData{Domain: d}
+	if records, err := mailsetup.SendingDNS(cfg, d); err != nil {
+		data.Error = err.Error()
+	} else {
+		data.Records = records
+	}
+	s.renderFragment(w, "sendingdns", data)
+}
+
+// requireMailbox rejects alias operations on a sending domain. Hiding the UI is
+// not enough: a sending domain has no addresses, and creating a routing rule
+// for one would put it on a zone that serves unrelated mail.
+func (s *Server) requireMailbox(w http.ResponseWriter, domain string) bool {
+	cfg, err := s.store.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return false
+	}
+	d := cfg.FindDomain(domain)
+	if d == nil {
+		http.NotFound(w, &http.Request{})
+		return false
+	}
+	if d.IsSending() {
+		http.Error(w, domain+" is a sending domain and has no addresses", http.StatusBadRequest)
+		return false
+	}
+	return true
 }

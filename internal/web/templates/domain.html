@@ -1,16 +1,34 @@
 {{define "content"}}
 <p class="muted" style="font-size:.85rem"><a href="/">← all domains</a></p>
-<h2 class="mono">{{.Domain.Domain}}</h2>
+<h2 class="mono">
+  {{.Domain.Domain}}
+  {{if .Domain.IsSending}}<span class="pill info">sending only</span>{{else}}<span class="pill info">mailbox</span>{{end}}
+</h2>
+
+{{if .Domain.IsSending}}
+<p class="muted" style="font-size:.88rem; margin-top:-.4rem">
+  Sends but does not receive. Its records live in the <span class="mono">{{.Domain.ZoneName}}</span> zone,
+  and nothing here affects that zone's routing.
+</p>
+{{else}}
+<h2>Addresses</h2>
 <div hx-get="/domains/{{.Domain.Domain}}/aliases" hx-trigger="load" hx-swap="outerHTML">
   <div class="card"><div class="empty">Reading live routing from Cloudflare…</div></div>
+</div>
+{{end}}
+
+<h2>Sending DNS</h2>
+<div hx-get="/domains/{{.Domain.Domain}}/dns" hx-trigger="load" hx-swap="outerHTML">
+  <div class="card"><div class="empty">Checking provider records against the zone…</div></div>
 </div>
 
 <h2>Details</h2>
 <div class="card scroll">
 <table>
-  <tr><th>Cloudflare zone</th><td class="mono">{{.Domain.CloudflareZoneID}}</td></tr>
+  <tr><th>Kind</th><td class="mono">{{.Domain.DomainKind}}</td></tr>
+  <tr><th>Cloudflare zone</th><td class="mono">{{.Domain.CloudflareZoneID}}{{if .Domain.IsSubdomain}} <span class="muted">({{.Domain.ZoneName}})</span>{{end}}</td></tr>
   <tr><th>Resend domain</th><td class="mono">{{if .Domain.ResendDomainID}}{{.Domain.ResendDomainID}}{{else}}<span class="pill warn">not registered</span>{{end}}</td></tr>
-  <tr><th>Tracked DNS records</th><td>{{if .Domain.ManagedDNSRecordIDs}}{{len .Domain.ManagedDNSRecordIDs}}{{else}}<span class="pill info">none — teardown will skip DNS</span>{{end}}</td></tr>
+  <tr><th>Tracked DNS records</th><td>{{if .Domain.ManagedDNSRecordIDs}}{{len .Domain.ManagedDNSRecordIDs}}{{else}}<span class="pill warn">none — teardown will skip DNS</span>{{end}}</td></tr>
   <tr><th>Added</th><td class="mono muted">{{.Domain.AddedAt}}</td></tr>
 </table>
 </div>

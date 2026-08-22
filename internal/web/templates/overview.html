@@ -1,22 +1,38 @@
 {{define "content"}}
-<h2>Domains</h2>
+<h2>Mailbox domains <span class="muted">— receive and send</span></h2>
 <div class="card scroll">
 <table>
-  <tr><th>Domain</th><th>Aliases</th><th>Forwards to</th><th>Tracked records</th></tr>
-  {{range .Domains}}
+  <tr><th>Domain</th><th>Addresses</th><th>Delivers to</th><th>Tracked records</th></tr>
+  {{range .Mailbox}}
   <tr>
     <td><a href="/domains/{{.Domain}}" class="mono">{{.Domain}}</a></td>
     <td class="mono muted">{{range .Aliases}}{{.Alias}}@ {{end}}</td>
     <td class="mono muted">{{.ForwardTo}}</td>
-    <td>{{if .Tracked}}{{.Tracked}}{{else}}<span class="pill info">none</span>{{end}}</td>
+    <td>{{if .Tracked}}{{.Tracked}}{{else}}<span class="pill warn" title="teardown will skip DNS for this domain">not tracked</span>{{end}}</td>
   </tr>
   {{else}}
-  <tr><td colspan="4" class="empty">No domains configured yet — set one up below.</td></tr>
+  <tr><td colspan="4" class="empty">None yet — set one up below.</td></tr>
   {{end}}
 </table>
 </div>
 
-<h2>Set up a new domain</h2>
+<h2>Sending domains <span class="muted">— send only</span></h2>
+<div class="card scroll">
+<table>
+  <tr><th>Domain</th><th>Zone</th><th>Tracked records</th></tr>
+  {{range .Sending}}
+  <tr>
+    <td><a href="/domains/{{.Domain}}" class="mono">{{.Domain}}</a></td>
+    <td class="mono muted">{{.ZoneName}}</td>
+    <td>{{if .Tracked}}{{.Tracked}}{{else}}<span class="pill warn" title="teardown will skip DNS for this domain">not tracked</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="3" class="empty">None. Newsletter and product senders belong here — one per subdomain.</td></tr>
+  {{end}}
+</table>
+</div>
+
+<h2>Set up a domain</h2>
 {{template "addform" .AddForm}}
 
 <h2>Reconciliation <span class="spin">checking…</span></h2>

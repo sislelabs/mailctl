@@ -2,13 +2,20 @@
 <div id="addform">
 <div class="card">
 <form class="inline" hx-post="/domains" hx-target="#addform" hx-swap="outerHTML">
+  <select name="kind" aria-label="domain kind">
+    <option value="mailbox">Mailbox — receive and send</option>
+    <option value="sending">Sending only — newsletters</option>
+  </select>
   <input type="text" name="domain" placeholder="yourdomain.com" required>
   <input type="text" name="aliases" placeholder="hello,support" value="hello">
   <input type="text" name="forward_to" placeholder="{{.Config.DefaultForwardTo}} (default)">
-  <button type="submit">Set up domain</button>
+  <button type="submit">Set up</button>
 </form>
 {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
-<div class="hint">The domain must already be a zone on your Cloudflare account.</div>
+<div class="hint">
+  A mailbox domain must be a Cloudflare zone of its own. A sending domain may be a
+  subdomain of one — its aliases and delivery fields are ignored.
+</div>
 </div>
 </div>
 {{end}}
