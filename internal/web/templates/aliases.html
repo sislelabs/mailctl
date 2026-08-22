@@ -1,0 +1,31 @@
+{{define "aliases"}}
+<div id="aliases">
+<div class="card">
+<table>
+  <tr><th>Address</th><th>Forwards to</th><th></th></tr>
+  {{range .Domain.Aliases}}
+  <tr>
+    <td class="mono">{{.Alias}}@{{$.Domain.Domain}}</td>
+    <td class="mono muted">{{join .ForwardTo ", "}}</td>
+    <td style="text-align:right">
+      <button class="ghost"
+        hx-delete="/domains/{{$.Domain.Domain}}/aliases/{{.Alias}}"
+        hx-target="#aliases" hx-swap="outerHTML"
+        hx-confirm="Delete {{.Alias}}@{{$.Domain.Domain}}? This removes its Cloudflare routing rule.">remove</button>
+    </td>
+  </tr>
+  {{else}}
+  <tr><td colspan="3" class="empty">No aliases yet.</td></tr>
+  {{end}}
+</table>
+<form class="inline" hx-post="/domains/{{.Domain.Domain}}/aliases"
+      hx-target="#aliases" hx-swap="outerHTML">
+  <input type="text" name="alias" placeholder="billing" required>
+  <input type="text" name="forward_to" placeholder="{{.ForwardTo}} (default)">
+  <button type="submit">Add alias</button>
+</form>
+{{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+</div>
+</div>
+{{end}}
+{{template "aliases" .}}

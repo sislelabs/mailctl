@@ -1,0 +1,22 @@
+{{define "content"}}
+<p class="muted" style="font-size:.85rem"><a href="/">← all domains</a></p>
+<h2 class="mono">{{.Domain.Domain}}</h2>
+{{template "aliases" .}}
+
+<h2>Details</h2>
+<div class="card scroll">
+<table>
+  <tr><th>Cloudflare zone</th><td class="mono">{{.Domain.CloudflareZoneID}}</td></tr>
+  <tr><th>Resend domain</th><td class="mono">{{if .Domain.ResendDomainID}}{{.Domain.ResendDomainID}}{{else}}<span class="pill warn">not registered</span>{{end}}</td></tr>
+  <tr><th>Tracked DNS records</th><td>{{if .Domain.ManagedDNSRecordIDs}}{{len .Domain.ManagedDNSRecordIDs}}{{else}}<span class="pill info">none — teardown will skip DNS</span>{{end}}</td></tr>
+  <tr><th>Added</th><td class="mono muted">{{.Domain.AddedAt}}</td></tr>
+</table>
+</div>
+
+<p class="muted" style="font-size:.85rem; margin-top:1.5rem">
+Adding and removing whole domains is still CLI-only — those run ten sequential
+API calls and need streamed progress. Use <code>mailctl add</code> and
+<code>mailctl remove</code>.
+</p>
+{{end}}
+{{template "layout" .}}

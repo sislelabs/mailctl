@@ -1,0 +1,70 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · mailctl</title>
+<script src="/static/htmx.min.js"></script>
+<style>
+:root {
+  --bg: #fbfbfa; --panel: #fff; --ink: #1c1c1a; --muted: #6b6b66;
+  --line: #e6e5e1; --accent: #b4522a; --ok: #2f7d52; --warn: #a8760f; --bad: #b3392f;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16161a; --panel: #1e1e23; --ink: #ecebe6; --muted: #9b9a93;
+    --line: #2e2e35; --accent: #e0895f; --ok: #6cc08c; --warn: #dcae55; --bad: #e8756a;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+}
+header {
+  border-bottom: 1px solid var(--line); padding: 1rem 1.5rem;
+  display: flex; align-items: baseline; gap: 1rem;
+}
+header a.brand { font-weight: 650; color: var(--ink); text-decoration: none; letter-spacing: -.01em; }
+header .sub { color: var(--muted); font-size: .85rem; }
+main { max-width: 68rem; margin: 0 auto; padding: 1.5rem; }
+h2 { font-size: 1rem; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); margin: 2rem 0 .75rem; }
+h2:first-child { margin-top: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+th, td { padding: .7rem .9rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+a { color: var(--accent); }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em; }
+.pill { display: inline-block; padding: .1rem .45rem; border-radius: 5px; font-size: .72rem; font-weight: 600; }
+.pill.problem { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+.pill.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.pill.info { background: color-mix(in srgb, var(--muted) 15%, transparent); color: var(--muted); }
+.muted { color: var(--muted); }
+form.inline { display: flex; gap: .5rem; padding: .9rem; flex-wrap: wrap; }
+input[type=text] {
+  flex: 1 1 12rem; padding: .45rem .6rem; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit;
+}
+button {
+  padding: .45rem .9rem; border: 1px solid transparent; border-radius: 6px;
+  background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer;
+}
+button.ghost { background: transparent; color: var(--muted); border-color: var(--line); font-weight: 500; }
+button.ghost:hover { color: var(--bad); border-color: var(--bad); }
+.err { color: var(--bad); padding: 0 .9rem .7rem; font-size: .88rem; }
+.empty { padding: 1.5rem .9rem; color: var(--muted); }
+.scroll { overflow-x: auto; }
+.htmx-request .spin { opacity: 1; }
+.spin { opacity: 0; transition: opacity .15s; color: var(--muted); font-size: .8rem; }
+</style>
+</head>
+<body>
+<header>
+  <a class="brand" href="/">mailctl</a>
+  <span class="sub">local panel · read-write on aliases</span>
+</header>
+<main>{{template "content" .}}</main>
+</body>
+</html>{{end}}
