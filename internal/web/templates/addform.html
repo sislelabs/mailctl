@@ -1,0 +1,15 @@
+{{define "addform"}}
+<div id="addform">
+<div class="card">
+<form class="inline" hx-post="/domains" hx-target="#addform" hx-swap="outerHTML">
+  <input type="text" name="domain" placeholder="yourdomain.com" required>
+  <input type="text" name="aliases" placeholder="hello,support" value="hello">
+  <input type="text" name="forward_to" placeholder="{{.Config.DefaultForwardTo}} (default)">
+  <button type="submit">Set up domain</button>
+</form>
+{{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+<div class="hint">The domain must already be a zone on your Cloudflare account.</div>
+</div>
+</div>
+{{end}}
+{{template "addform" .}}

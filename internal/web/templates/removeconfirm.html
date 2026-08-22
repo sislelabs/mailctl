@@ -1,0 +1,22 @@
+{{define "removeconfirm"}}
+<div id="removebox">
+<div class="card danger">
+<div class="dangerhead">Tear down {{.Domain.Domain}}</div>
+<ul class="notes">
+  <li class="problem">Cloudflare routing rules for every address on this domain</li>
+  <li class="problem">Catch-all forwarding</li>
+  <li class="problem">The {{.Provider}} sending domain</li>
+  <li class="{{if .Tracked}}problem{{else}}info{{end}}">
+    {{if .Tracked}}{{.Tracked}} DNS record(s) mailctl created{{else}}No DNS records — none are tracked, so DNS is left untouched{{end}}
+  </li>
+</ul>
+<p class="muted">Mail to every address on this domain stops being delivered. This cannot be undone.</p>
+<form class="inline" hx-delete="/domains/{{.Domain.Domain}}" hx-target="#removebox" hx-swap="outerHTML">
+  <input type="text" name="confirm" placeholder="type {{.Domain.Domain}} to confirm" autocomplete="off" required>
+  <button type="submit" class="danger">Tear down</button>
+</form>
+{{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+</div>
+</div>
+{{end}}
+{{template "removeconfirm" .}}

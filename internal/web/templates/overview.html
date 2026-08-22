@@ -11,10 +11,13 @@
     <td>{{if .Tracked}}{{.Tracked}}{{else}}<span class="pill info">none</span>{{end}}</td>
   </tr>
   {{else}}
-  <tr><td colspan="4" class="empty">No domains configured. Run <code>mailctl add</code>.</td></tr>
+  <tr><td colspan="4" class="empty">No domains configured yet — set one up below.</td></tr>
   {{end}}
 </table>
 </div>
+
+<h2>Set up a new domain</h2>
+{{template "addform" .AddForm}}
 
 <h2>Reconciliation <span class="spin">checking…</span></h2>
 <div hx-get="/audit" hx-trigger="load" hx-swap="outerHTML">

@@ -15,10 +15,15 @@
 </table>
 </div>
 
-<p class="muted" style="font-size:.85rem; margin-top:1.5rem">
-Adding and removing whole domains is still CLI-only — those run ten sequential
-API calls and need streamed progress. Use <code>mailctl add</code> and
-<code>mailctl remove</code>.
-</p>
+<h2>Danger zone</h2>
+<div id="removebox">
+  <div class="card">
+    <div class="inline">
+      <button class="ghost danger-outline"
+        hx-get="/domains/{{.Domain.Domain}}/remove"
+        hx-target="#removebox" hx-swap="outerHTML">Tear down this domain…</button>
+    </div>
+  </div>
+</div>
 {{end}}
 {{template "layout" .}}

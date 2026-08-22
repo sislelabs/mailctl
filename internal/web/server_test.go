@@ -135,3 +135,72 @@ func TestStaticAssetIsServed(t *testing.T) {
 		t.Errorf("htmx looks truncated: %d bytes", rec.Body.Len())
 	}
 }
+
+func post(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestAddDomainRejectsBadInputBeforeStartingAJob(t *testing.T) {
+	rec := post(t, testServer(t), "/domains", "domain=notadomain&aliases=hello")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "is not a domain name") {
+		t.Errorf("expected validation message, got:\n%s", body)
+	}
+	// A rejected form must come back as the form, not as a progress view that
+	// would fail on its first step.
+	if strings.Contains(body, "/jobs/") {
+		t.Error("no job should have been started")
+	}
+}
+
+func TestAddDomainRejectsAnAlreadyConfiguredDomain(t *testing.T) {
+	rec := post(t, testServer(t), "/domains", "domain=example.com&aliases=hello")
+	if !strings.Contains(rec.Body.String(), "already configured") {
+		t.Errorf("expected a duplicate message, got:\n%s", rec.Body.String())
+	}
+}
+
+func TestUnknownJobIs404(t *testing.T) {
+	if rec := get(t, testServer(t), "/jobs/deadbeef"); rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestRemoveConfirmShowsScope(t *testing.T) {
+	rec := get(t, testServer(t), "/domains/example.com/remove")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	// The domain in the fixture has no tracked records, so the prompt must say
+	// DNS is left alone rather than implying a broader sweep.
+	if !strings.Contains(body, "none are tracked") {
+		t.Errorf("expected the DNS scope to be spelled out, got:\n%s", body)
+	}
+	if !strings.Contains(body, "type example.com to confirm") {
+		t.Error("expected a typed confirmation prompt")
+	}
+}
+
+func TestRemoveRequiresTheExactDomainName(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/domains/example.com", strings.NewReader("confirm=wrong"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	testServer(t).ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Type the domain name exactly") {
+		t.Errorf("expected a refusal, got:\n%s", body)
+	}
+	if strings.Contains(body, "/jobs/") {
+		t.Error("a teardown must not start without an exact confirmation")
+	}
+}

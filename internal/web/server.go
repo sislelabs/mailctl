@@ -29,6 +29,7 @@ var staticFS embed.FS
 // Server serves the panel from a Store.
 type Server struct {
 	store store.Store
+	jobs  *jobs
 	// pages are full documents, one template set each. Go collapses same-named
 	// define blocks across a single set, and every page defines "content", so
 	// they cannot share one.
@@ -42,14 +43,18 @@ func NewServer(st store.Store) (*Server, error) {
 	funcs := template.FuncMap{
 		"levelClass": levelClass,
 		"join":       strings.Join,
+		"stepClass":  stepClass,
+		"noteClass":  noteClass,
 	}
 
-	srv := &Server{store: st, pages: map[string]*template.Template{}}
+	srv := &Server{store: st, jobs: newJobs(), pages: map[string]*template.Template{}}
 
 	// Each page gets the layout and every shared partial.
 	for _, page := range []string{"overview.html", "domain.html"} {
 		t, err := template.New(page).Funcs(funcs).ParseFS(templateFS,
-			"templates/layout.html", "templates/aliases.html", "templates/audit.html", "templates/"+page)
+			"templates/layout.html", "templates/aliases.html", "templates/audit.html",
+			"templates/job.html", "templates/addform.html", "templates/removeconfirm.html",
+			"templates/"+page)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s: %w", page, err)
 		}
@@ -57,7 +62,8 @@ func NewServer(st store.Store) (*Server, error) {
 	}
 
 	frags, err := template.New("frags").Funcs(funcs).ParseFS(templateFS,
-		"templates/aliases.html", "templates/audit.html")
+		"templates/aliases.html", "templates/audit.html", "templates/job.html",
+		"templates/addform.html", "templates/removeconfirm.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse fragments: %w", err)
 	}
@@ -77,6 +83,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /domains/{domain}/aliases", s.handleAddAlias)
 	mux.HandleFunc("DELETE /domains/{domain}/aliases/{alias}", s.handleRemoveAlias)
 	mux.HandleFunc("POST /domains/{domain}/aliases/{alias}/forward", s.handleRepointAlias)
+	mux.HandleFunc("POST /domains", s.handleAddDomain)
+	mux.HandleFunc("GET /domains/{domain}/remove", s.handleRemoveConfirm)
+	mux.HandleFunc("DELETE /domains/{domain}", s.handleRemoveDomain)
+	mux.HandleFunc("GET /jobs/{id}", s.handleJob)
 	return mux
 }
 
@@ -116,6 +126,9 @@ type overviewData struct {
 	Title   string
 	Config  *internal.Config
 	Domains []domainRow
+	// AddForm is passed to the shared add-domain fragment, which the same
+	// handler re-renders on validation failure.
+	AddForm addFormData
 }
 
 type domainRow struct {
@@ -132,7 +145,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := overviewData{Title: "Domains", Config: cfg}
+	data := overviewData{Title: "Domains", Config: cfg, AddForm: addFormData{Config: cfg}}
 	for i := range cfg.Domains {
 		d := &cfg.Domains[i]
 		row := domainRow{
@@ -276,4 +289,169 @@ func (s *Server) renderAliasesWith(w http.ResponseWriter, domain, errMsg, notice
 		data.Aliases = views
 	}
 	s.renderFragment(w, "aliases", data)
+}
+
+type jobData struct {
+	Job     *Job
+	Steps   []JobStep
+	Done    bool
+	Error   string
+	Success bool
+}
+
+// handleAddDomain starts a domain setup and hands back the progress view.
+func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.store.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	opts := mailsetup.AddOptions{
+		Domain:    strings.TrimSpace(r.FormValue("domain")),
+		Aliases:   strings.Split(r.FormValue("aliases"), ","),
+		ForwardTo: strings.TrimSpace(r.FormValue("forward_to")),
+	}
+
+	// Reject bad input before starting a job, so a typo comes back as a
+	// message instead of a progress view that fails on its first step.
+	if err := mailsetup.ValidateAdd(cfg, opts); err != nil {
+		s.renderFragment(w, "addform", addFormData{Config: cfg, Error: err.Error()})
+		return
+	}
+
+	job := newJob("add", opts.Domain, mailsetup.AddStepLabels(mailsetup.ProviderLabel(cfg)))
+	if !s.jobs.start(job, func() error {
+		_, err := mailsetup.AddDomain(s.store, job, opts)
+		return err
+	}) {
+		s.renderFragment(w, "addform", addFormData{Config: cfg, Error: "another domain operation is already running"})
+		return
+	}
+
+	s.renderJob(w, job)
+}
+
+// handleRemoveConfirm renders what teardown would delete, mirroring the CLI's
+// typed confirmation rather than a one-click destructive button.
+func (s *Server) handleRemoveConfirm(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.store.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	d := cfg.FindDomain(r.PathValue("domain"))
+	if d == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	s.renderFragment(w, "removeconfirm", removeConfirmData{
+		Domain:   d,
+		Provider: mailsetup.ProviderLabel(cfg),
+		Tracked:  len(d.ManagedDNSRecordIDs),
+	})
+}
+
+// handleRemoveDomain starts a teardown.
+func (s *Server) handleRemoveDomain(w http.ResponseWriter, r *http.Request) {
+	domain := r.PathValue("domain")
+
+	cfg, err := s.store.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	d := cfg.FindDomain(domain)
+	if d == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	// The typed name has to match, the same guard the CLI uses.
+	if strings.TrimSpace(r.FormValue("confirm")) != domain {
+		s.renderFragment(w, "removeconfirm", removeConfirmData{
+			Domain:   d,
+			Provider: mailsetup.ProviderLabel(cfg),
+			Tracked:  len(d.ManagedDNSRecordIDs),
+			Error:    "Type the domain name exactly to confirm.",
+		})
+		return
+	}
+
+	job := newJob("remove", domain, mailsetup.RemoveStepLabels(mailsetup.ProviderLabel(cfg)))
+	if !s.jobs.start(job, func() error {
+		_, err := mailsetup.RemoveDomain(s.store, job, mailsetup.RemoveOptions{Domain: domain})
+		return err
+	}) {
+		s.renderFragment(w, "removeconfirm", removeConfirmData{
+			Domain:   d,
+			Provider: mailsetup.ProviderLabel(cfg),
+			Tracked:  len(d.ManagedDNSRecordIDs),
+			Error:    "Another domain operation is already running.",
+		})
+		return
+	}
+
+	s.renderJob(w, job)
+}
+
+// handleJob renders a job's current state. The fragment polls itself until the
+// work finishes and then stops.
+func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
+	job := s.jobs.get(r.PathValue("id"))
+	if job == nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.renderJob(w, job)
+}
+
+func (s *Server) renderJob(w http.ResponseWriter, job *Job) {
+	steps, done, errMsg := job.Snapshot()
+	s.renderFragment(w, "job", jobData{
+		Job:     job,
+		Steps:   steps,
+		Done:    done,
+		Error:   errMsg,
+		Success: done && errMsg == "",
+	})
+}
+
+type addFormData struct {
+	Config *internal.Config
+	Error  string
+}
+
+type removeConfirmData struct {
+	Domain   *internal.DomainConfig
+	Provider string
+	Tracked  int
+	Error    string
+}
+
+func stepClass(s mailsetup.StepStatus) string {
+	switch s {
+	case mailsetup.StepRunning:
+		return "running"
+	case mailsetup.StepDone:
+		return "done"
+	case mailsetup.StepWarn:
+		return "warn"
+	case mailsetup.StepFailed:
+		return "problem"
+	default:
+		return "pending"
+	}
+}
+
+func noteClass(l mailsetup.NoteLevel) string {
+	switch l {
+	case mailsetup.NoteWarn:
+		return "warn"
+	case mailsetup.NoteError:
+		return "problem"
+	default:
+		return "info"
+	}
 }
