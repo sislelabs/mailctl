@@ -100,6 +100,7 @@ func init() {
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(gmailCmd)
 	rootCmd.AddCommand(reputationCmd)
+	rootCmd.AddCommand(dmarcCmd)
 	rootCmd.AddCommand(removeCmd)
 	rootCmd.AddCommand(aliasCmd)
 	rootCmd.AddCommand(flowCmd)

@@ -61,6 +61,7 @@ mailctl check yourdomain.com              # Deep health check (routing, DNS, sen
 mailctl doctor                            # Check the Cloudflare token has every permission
 mailctl gmail yourdomain.com              # Steps to send from this domain in Gmail
 mailctl reputation yourdomain.com         # Sending history and deliverability readiness
+mailctl dmarc ~/Downloads/report.zip      # Read a DMARC aggregate report
 mailctl sync --dry-run                    # Show where config disagrees with live routing
 mailctl sync                              # Adopt live Cloudflare routing into config
 mailctl register yourdomain.com           # Register an existing domain with the sending provider
