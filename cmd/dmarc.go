@@ -127,6 +127,14 @@ func renderReport(path string) error {
 			rec.Row.PolicyEvaluated.DKIM, rec.Row.PolicyEvaluated.SPF,
 			style.Render(dispositionText(rec.Row.PolicyEvaluated.Disposition, rec.Passed())))))
 
+		// SPF breaks whenever mail is forwarded, because the forwarding server is
+		// not in the original sender's SPF record. DKIM survives, which is the
+		// whole reason DMARC accepts either. Saying so keeps a healthy report
+		// from reading as a half-failure.
+		if rec.Passed() && rec.Row.PolicyEvaluated.DKIM == "pass" && rec.Row.PolicyEvaluated.SPF != "pass" {
+			fmt.Println("      " + ui.Dim.Render("SPF does not survive forwarding; DKIM carried the alignment"))
+		}
+
 		// The raw results explain a failure the aligned verdict only reports:
 		// a DKIM signature can pass while signing the wrong domain.
 		if !rec.Passed() {
