@@ -15,7 +15,7 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "mailctl",
 	Short: "Automate custom domain email setup with Cloudflare + Brevo",
-	Long:  "mailctl automates custom domain email setup using Cloudflare Email Routing (receiving) and Brevo (sending).",
+	Long:  "mailctl automates custom domain email setup using Cloudflare Email Routing (receiving) and Resend or Brevo (sending).",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return tui.Run()
 	},
@@ -93,6 +93,14 @@ func init() {
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(checkCmd)
+	rootCmd.AddCommand(logsCmd)
+	rootCmd.AddCommand(doctorCmd)
+	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(registerCmd)
+	rootCmd.AddCommand(syncCmd)
+	rootCmd.AddCommand(gmailCmd)
+	rootCmd.AddCommand(reputationCmd)
+	rootCmd.AddCommand(dmarcCmd)
 	rootCmd.AddCommand(removeCmd)
 	rootCmd.AddCommand(aliasCmd)
 	rootCmd.AddCommand(flowCmd)

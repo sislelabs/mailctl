@@ -173,7 +173,6 @@ func stepConfigLoad(ctx *StepContext, args map[string]interface{}) (interface{},
 	return ctx.Config, nil
 }
 
-
 // InitSteps registers all generic steps. Called once at startup.
 func InitSteps() {
 	registerGenericSteps()

@@ -1,0 +1,30 @@
+{{define "reputation"}}
+<div id="reputation">
+<div class="card">
+{{if .Error}}
+  <div class="hint">{{.Error}}</div>
+{{else}}
+<div class="jobhead">
+  <span class="pill {{stageClass .Rep.Stage}}">{{.Rep.Stage}}</span>
+  <span class="muted">{{if .Rep.Sent}}{{.Rep.Sent}}{{if .Rep.Capped}}+{{end}} sent{{else}}never sent{{end}}</span>
+</div>
+<table>
+  <tr><th>Registered with Resend</th><td class="mono muted">{{.RegisteredAt}}</td></tr>
+  {{if .SendingSince}}<tr><th>Sending since</th><td class="mono muted">{{.SendingSince}}</td></tr>{{end}}
+  {{if .Rep.Sent}}
+  <tr><th>Delivered</th><td class="mono">{{.Rep.Delivered}}</td></tr>
+  {{if .Rep.Bounced}}<tr><th>Bounced</th><td class="mono bad">{{.Rep.Bounced}}</td></tr>{{end}}
+  {{if .Rep.Complained}}<tr><th>Complaints</th><td class="mono bad">{{.Rep.Complained}}</td></tr>{{end}}
+  {{end}}
+  <tr><th>DMARC</th><td class="mono">{{if .Rep.DMARCPolicy}}p={{.Rep.DMARCPolicy}}{{if not .Rep.DMARCReports}} <span class="pill warn">no reporting</span>{{end}}{{else}}<span class="pill warn">not published</span>{{end}}</td></tr>
+</table>
+{{with .Rep.Advice}}
+<ul class="notes advice">
+  {{range .}}<li>{{.}}</li>{{end}}
+</ul>
+{{end}}
+{{end}}
+</div>
+</div>
+{{end}}
+{{template "reputation" .}}

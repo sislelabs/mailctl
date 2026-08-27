@@ -5,22 +5,12 @@ import (
 	"strings"
 
 	"github.com/sislelabs/mailctl/internal"
-	"github.com/sislelabs/mailctl/internal/brevo"
 	"github.com/sislelabs/mailctl/internal/cloudflare"
-	"github.com/sislelabs/mailctl/internal/resend"
+	"github.com/sislelabs/mailctl/internal/mailsetup"
+	"github.com/sislelabs/mailctl/internal/store"
 	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/spf13/cobra"
 )
-
-func isSendingDNSRecord(rec cloudflare.DNSRecord) bool {
-	return strings.Contains(rec.Name, "resend") ||
-		strings.Contains(rec.Content, "resend") ||
-		strings.Contains(rec.Content, "amazonses") ||
-		strings.Contains(rec.Name, "brevo") ||
-		strings.Contains(rec.Content, "brevo") ||
-		strings.Contains(rec.Name, "_domainkey") ||
-		strings.Contains(rec.Name, "_dmarc")
-}
 
 var removeCmd = &cobra.Command{
 	Use:     "remove [domain]",
@@ -30,16 +20,21 @@ var removeCmd = &cobra.Command{
 	RunE:    runRemove,
 }
 
-var removeForce bool
+var (
+	removeForce  bool
+	removeDryRun bool
+)
 
 func init() {
 	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false, "Skip confirmation")
+	removeCmd.Flags().BoolVar(&removeDryRun, "dry-run", false, "Show what would be removed without changing anything")
 }
 
 func runRemove(cmd *cobra.Command, args []string) error {
 	domain := args[0]
 
-	cfg, err := internal.LoadConfig()
+	st := store.NewYAML()
+	cfg, err := st.Load()
 	if err != nil {
 		return err
 	}
@@ -49,17 +44,32 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("domain %s not found in config", domain)
 	}
 
-	providerName := "Brevo"
-	if cfg.SendingProvider() == internal.ProviderResend {
-		providerName = "Resend"
+	providerName := mailsetup.ProviderLabel(cfg)
+
+	if removeDryRun {
+		return previewRemove(cfg, d, providerName)
 	}
 
 	if !removeForce {
 		var items []string
-		items = append(items, ui.IconDot+" Cloudflare email routing rules")
-		items = append(items, ui.IconDot+" "+providerName+" domain")
-		items = append(items, ui.IconDot+" Sending DNS records")
-		items = append(items, ui.IconDot+" Config entry")
+		if d.IsSending() {
+			// A sending domain has no routing of its own, and its records
+			// usually sit in a zone carrying unrelated mail.
+			items = []string{
+				ui.IconDot + " " + providerName + " domain",
+				ui.IconDot + " " + dnsScopeSummary(d),
+				ui.IconDot + " Config entry",
+				ui.IconDot + " " + ui.Dim.Render("Routing and catch-all on "+d.ZoneName()+" are not touched"),
+			}
+		} else {
+			items = []string{
+				ui.IconDot + " Cloudflare routing rules for @" + domain,
+				ui.IconDot + " Catch-all forwarding",
+				ui.IconDot + " " + providerName + " domain",
+				ui.IconDot + " " + dnsScopeSummary(d),
+				ui.IconDot + " Config entry",
+			}
+		}
 
 		message := fmt.Sprintf("This will remove all email setup for %s:\n\n%s",
 			ui.Error.Bold(true).Render(domain),
@@ -75,114 +85,104 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	provider := cfg.SendingProvider()
+	labels := mailsetup.RemoveStepLabels(d, providerName)
 
-	stepLabels := []string{
-		"Delete routing rules",
-		"Delete " + providerName + " domain",
-		"Clean up DNS records",
-		"Remove from config",
-	}
-
-	err = ui.RunProgress("Removing "+ui.Error.Bold(true).Render(domain), stepLabels, func(p *ui.ProgressRunner) {
-		cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
-
-		// Step 0: Delete routing rules
-		p.Start(0)
-		rules, err := cf.ListRoutingRules(d.CloudflareZoneID)
-		if err != nil {
-			p.Warn(0, err.Error())
-		} else {
-			count := 0
-			for _, rule := range rules {
-				for _, m := range rule.Matchers {
-					if strings.HasSuffix(m.Value, "@"+domain) {
-						if err := cf.DeleteRoutingRule(d.CloudflareZoneID, rule.ID); err != nil {
-							p.SubRow(0, ui.IconError+" "+ui.Dim.Render(m.Value))
-						} else {
-							p.SubRow(0, ui.IconSuccess+" "+ui.Dim.Render(m.Value))
-							count++
-						}
-						break
-					}
-				}
-			}
-			p.Done(0, fmt.Sprintf("%d deleted", count))
-		}
-
-		// Step 1: Delete the sending-provider domain
-		p.Start(1)
-		if provider == internal.ProviderResend {
-			rc := resend.NewClient(cfg.ResendAPIKey)
-			id := d.ResendDomainID
-			if id == "" {
-				// Fall back to a name lookup for domains added before the ID
-				// was persisted.
-				if rd, err := rc.FindDomainByName(domain); err == nil && rd != nil {
-					id = rd.ID
-				}
-			}
-			if id == "" {
-				p.Warn(1, "not found or already deleted")
-			} else if err := rc.DeleteDomain(id); err != nil {
-				p.Warn(1, "not found or already deleted")
-			} else {
-				p.Done(1, "")
-			}
-		} else {
-			bv := brevo.NewClient(cfg.BrevoAPIKey)
-			if err := bv.DeleteDomain(domain); err != nil {
-				p.Warn(1, "not found or already deleted")
-			} else {
-				p.Done(1, "")
-			}
-		}
-
-		// Step 2: Clean up DNS records
-		p.Start(2)
-		count := 0
-		txtRecords, err := cf.ListDNSRecords(d.CloudflareZoneID, "TXT")
-		if err == nil {
-			for _, rec := range txtRecords {
-				if isSendingDNSRecord(rec) {
-					if err := cf.DeleteDNSRecord(d.CloudflareZoneID, rec.ID); err == nil {
-						p.SubRow(2, ui.IconSuccess+" "+ui.Dim.Render("TXT "+rec.Name))
-						count++
-					}
-				}
-			}
-		}
-		cnameRecords, err := cf.ListDNSRecords(d.CloudflareZoneID, "CNAME")
-		if err == nil {
-			for _, rec := range cnameRecords {
-				if isSendingDNSRecord(rec) {
-					if err := cf.DeleteDNSRecord(d.CloudflareZoneID, rec.ID); err == nil {
-						p.SubRow(2, ui.IconSuccess+" "+ui.Dim.Render("CNAME "+rec.Name))
-						count++
-					}
-				}
-			}
-		}
-		p.Done(2, fmt.Sprintf("%d deleted", count))
-
-		// Step 3: Remove from config
-		p.Start(3)
-		cfg.RemoveDomain(domain)
-		if err := internal.SaveConfig(cfg); err != nil {
-			p.Fail(3, err.Error())
-			return
-		}
-		p.Done(3, "")
+	var runErr error
+	uiErr := ui.RunProgress("Removing "+ui.Error.Bold(true).Render(domain), labels, func(p *ui.ProgressRunner) {
+		_, runErr = mailsetup.RemoveDomain(st, progressReporter(p), mailsetup.RemoveOptions{Domain: domain})
 	})
-
-	if err != nil {
-		return err
+	if uiErr != nil {
+		return uiErr
+	}
+	if runErr != nil {
+		return runErr
 	}
 
 	fmt.Println()
 	fmt.Println(ui.SuccessPanel.Render(
 		ui.IconSuccess + " " + ui.Success.Bold(true).Render(domain+" removed"),
 	))
+	fmt.Println()
+
+	return nil
+}
+
+// dnsScopeSummary describes, for the confirmation prompt, exactly which DNS
+// records teardown will touch.
+func dnsScopeSummary(d *internal.DomainConfig) string {
+	n := len(d.ManagedDNSRecordIDs)
+	if n == 0 {
+		return "No DNS records (none tracked — nothing will be deleted)"
+	}
+	return fmt.Sprintf("%d DNS records created by mailctl", n)
+}
+
+// previewRemove reports what a teardown would do without changing anything.
+func previewRemove(cfg *internal.Config, d *internal.DomainConfig, providerName string) error {
+	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
+	domain := d.Domain
+
+	fmt.Println()
+	fmt.Println(ui.Highlight.Render("  Dry run — nothing will be changed"))
+	fmt.Println()
+
+	if d.IsSending() {
+		// A sending domain has no routing of its own. Its records sit in a zone
+		// that usually carries unrelated mail, so teardown must leave the
+		// zone-level catch-all and every rule alone.
+		fmt.Println(ui.Heading("  Routing"))
+		fmt.Println(ui.StepResult(ui.IconDot,
+			ui.Dim.Render("not touched — sending domain in the "+d.ZoneName()+" zone")))
+		fmt.Println()
+	} else {
+		fmt.Println(ui.Heading("  Routing rules to delete"))
+		rules, err := cf.ListRoutingRules(d.CloudflareZoneID)
+		if err != nil {
+			fmt.Println(ui.StepResult(ui.IconWarn, ui.Dim.Render(err.Error())))
+		} else {
+			found := 0
+			for _, rule := range rules {
+				for _, m := range rule.Matchers {
+					if strings.HasSuffix(m.Value, "@"+domain) {
+						fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render(m.Value)))
+						found++
+						break
+					}
+				}
+			}
+			if found == 0 {
+				fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render("none")))
+			}
+		}
+		fmt.Println()
+
+		fmt.Println(ui.Heading("  Catch-all"))
+		fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render("*@"+domain+" would be disabled")))
+		fmt.Println()
+	}
+
+	fmt.Println(ui.Heading("  " + providerName + " domain"))
+	fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render(domain+" would be deleted")))
+	fmt.Println()
+
+	fmt.Println(ui.Heading("  DNS records to delete"))
+	if len(d.ManagedDNSRecordIDs) == 0 {
+		fmt.Println(ui.StepResult(ui.IconWarn, ui.Dim.Render("none tracked — DNS would be left untouched")))
+	} else {
+		labels := map[string]string{}
+		if all, err := cf.ListDNSRecords(d.CloudflareZoneID, ""); err == nil {
+			for _, rec := range all {
+				labels[rec.ID] = rec.Type + " " + rec.Name
+			}
+		}
+		for _, id := range d.ManagedDNSRecordIDs {
+			if label, ok := labels[id]; ok {
+				fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render(label)))
+			} else {
+				fmt.Println(ui.StepResult(ui.IconDot, ui.Dim.Render(id+" (already gone)")))
+			}
+		}
+	}
 	fmt.Println()
 
 	return nil

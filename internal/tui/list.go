@@ -4,22 +4,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sislelabs/mailctl/internal"
-	"github.com/sislelabs/mailctl/internal/cloudflare"
-	"github.com/sislelabs/mailctl/internal/brevo"
-	"github.com/sislelabs/mailctl/internal/resend"
-	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/sislelabs/mailctl/internal"
+	"github.com/sislelabs/mailctl/internal/brevo"
+	"github.com/sislelabs/mailctl/internal/cloudflare"
+	"github.com/sislelabs/mailctl/internal/resend"
+	"github.com/sislelabs/mailctl/internal/ui"
 )
 
 // ── Domain status cache ─────────────────────────────────────────────────────
 
 var (
-	cachedRows    []domainRow
-	cachedAt      time.Time
-	cacheTTL      = 5 * time.Minute
+	cachedRows []domainRow
+	cachedAt   time.Time
+	cacheTTL   = 5 * time.Minute
 )
 
 func domainCacheValid() bool {
@@ -27,12 +27,12 @@ func domainCacheValid() bool {
 }
 
 type domainRow struct {
-	domain       string
-	cfStatus     string
-	cfIcon       string
+	domain      string
+	cfStatus    string
+	cfIcon      string
 	brevoStatus string
 	brevoIcon   string
-	aliases      string
+	aliases     string
 }
 
 type ListModel struct {

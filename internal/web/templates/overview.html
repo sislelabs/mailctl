@@ -1,0 +1,43 @@
+{{define "content"}}
+<h2>Mailbox domains <span class="muted">— receive and send</span></h2>
+<div class="card scroll">
+<table>
+  <tr><th>Domain</th><th>Addresses</th><th>Catch-all delivers to</th><th>Tracked records</th></tr>
+  {{range .Mailbox}}
+  <tr>
+    <td><a href="/domains/{{.Domain}}" class="mono">{{.Domain}}</a></td>
+    <td class="mono muted">{{range .Aliases}}{{.Alias}}@ {{end}}</td>
+    <td hx-get="/domains/{{.Domain}}/catchall" hx-trigger="load" hx-swap="outerHTML" class="muted">…</td>
+    <td>{{if .Tracked}}{{.Tracked}}{{else}}<span class="pill warn" title="teardown will skip DNS for this domain">not tracked</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="4" class="empty">None yet — set one up below.</td></tr>
+  {{end}}
+</table>
+</div>
+
+<h2>Sending domains <span class="muted">— send only</span></h2>
+<div class="card scroll">
+<table>
+  <tr><th>Domain</th><th>Zone</th><th>Tracked records</th></tr>
+  {{range .Sending}}
+  <tr>
+    <td><a href="/domains/{{.Domain}}" class="mono">{{.Domain}}</a></td>
+    <td class="mono muted">{{.ZoneName}}</td>
+    <td>{{if .Tracked}}{{.Tracked}}{{else}}<span class="pill warn" title="teardown will skip DNS for this domain">not tracked</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="3" class="empty">None. Newsletter and product senders belong here — one per subdomain.</td></tr>
+  {{end}}
+</table>
+</div>
+
+<h2>Set up a domain</h2>
+{{template "addform" .AddForm}}
+
+<h2>Reconciliation <span class="spin">checking…</span></h2>
+<div hx-get="/audit" hx-trigger="load" hx-swap="outerHTML">
+  <div class="card"><div class="empty">Comparing config against Cloudflare and Resend…</div></div>
+</div>
+{{end}}
+{{template "layout" .}}

@@ -1,0 +1,35 @@
+{{define "job"}}
+<div id="job" {{if not .Done}}hx-get="/jobs/{{.Job.ID}}" hx-trigger="every 1s" hx-swap="outerHTML"{{end}}>
+<div class="card">
+  <div class="jobhead">
+    {{if .Done}}
+      {{if .Success}}<span class="pill ok">finished</span>{{else}}<span class="pill problem">failed</span>{{end}}
+    {{else}}
+      <span class="pill info">running</span>
+    {{end}}
+    <span class="mono">{{.Job.Kind}} {{.Job.Domain}}</span>
+  </div>
+  <ol class="steps">
+    {{range .Steps}}
+    <li class="{{stepClass .Status}}">
+      <span class="label">{{.Label}}</span>
+      {{if .Detail}}<span class="muted mono detail">{{.Detail}}</span>{{end}}
+      {{if .Notes}}
+      <ul class="notes">
+        {{range .Notes}}<li class="{{noteClass .Level}}">{{.Text}}</li>{{end}}
+      </ul>
+      {{end}}
+    </li>
+    {{end}}
+  </ol>
+  {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+  {{if .Done}}
+  <div class="jobfoot">
+    <a href="/">← back to domains</a>
+    {{if .Success}}<span class="muted"> · verification is asynchronous; re-check in a minute</span>{{end}}
+  </div>
+  {{end}}
+</div>
+</div>
+{{end}}
+{{template "job" .}}

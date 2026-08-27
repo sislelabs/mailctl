@@ -6,11 +6,11 @@ import (
 	"os/exec"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/sislelabs/mailctl/internal"
 	"github.com/sislelabs/mailctl/internal/flow"
 	"github.com/sislelabs/mailctl/internal/ui"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // ── Views ───────────────────────────────────────────────────────────────────
@@ -40,15 +40,15 @@ type App struct {
 	prevView View
 
 	// Sub-models
-	initWizard  InitModel
-	domainList  ListModel
-	detail      DetailModel
-	aliases     AliasesModel
-	addDomain   AddDomainModel
-	addAlias    AddAliasModel
-	deleteConf  DeleteConfirmModel
-	flowsList   FlowsModel
-	flowOutput  FlowOutputModel
+	initWizard InitModel
+	domainList ListModel
+	detail     DetailModel
+	aliases    AliasesModel
+	addDomain  AddDomainModel
+	addAlias   AddAliasModel
+	deleteConf DeleteConfirmModel
+	flowsList  FlowsModel
+	flowOutput FlowOutputModel
 
 	// State
 	statusMsg string

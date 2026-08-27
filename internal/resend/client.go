@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -45,6 +46,9 @@ type Domain struct {
 	Status  string      `json:"status"`
 	Region  string      `json:"region"`
 	Records []DNSRecord `json:"records"`
+	// CreatedAt is when the domain was registered with Resend, which bounds
+	// how much sending reputation it can possibly have.
+	CreatedAt string `json:"created_at"`
 }
 
 type listDomainsResponse struct {
@@ -218,4 +222,112 @@ func (c *Client) SendEmail(p SendParams) error {
 
 	_, _, err := c.do("POST", "/emails", body)
 	return err
+}
+
+// EmailSummary is one entry from the sent-email list. Resend returns
+// references rather than full messages here; bodies require a per-id fetch.
+type EmailSummary struct {
+	ID        string   `json:"id"`
+	MessageID string   `json:"message_id"`
+	To        []string `json:"to"`
+	From      string   `json:"from"`
+	CreatedAt string   `json:"created_at"`
+	Subject   string   `json:"subject"`
+	BCC       []string `json:"bcc"`
+	CC        []string `json:"cc"`
+	ReplyTo   []string `json:"reply_to"`
+	// LastEvent is the most recent delivery event: sent, delivered, bounced,
+	// complained, opened, clicked, delivery_delayed.
+	LastEvent   string  `json:"last_event"`
+	ScheduledAt *string `json:"scheduled_at"`
+}
+
+type listEmailsResponse struct {
+	Data    []EmailSummary `json:"data"`
+	HasMore bool           `json:"has_more"`
+}
+
+// maxEmailPageSize is Resend's per-request ceiling for GET /emails.
+const maxEmailPageSize = 100
+
+// ListEmails retrieves one page of sent emails, newest first. after is a
+// cursor: pass the ID of the last email from the previous page to continue.
+//
+// This covers outbound mail only. Resend has no view of messages *received* at
+// the domain — inbound is handled entirely by Cloudflare Email Routing, which
+// exposes no delivery-history API.
+func (c *Client) ListEmails(limit int, after string) ([]EmailSummary, bool, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > maxEmailPageSize {
+		limit = maxEmailPageSize
+	}
+
+	path := fmt.Sprintf("/emails?limit=%d", limit)
+	if after != "" {
+		path += "&after=" + url.QueryEscape(after)
+	}
+
+	respBody, _, err := c.do("GET", path, nil)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var resp listEmailsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, false, fmt.Errorf("parse emails response: %w", err)
+	}
+	return resp.Data, resp.HasMore, nil
+}
+
+// ListEmailsN retrieves up to total sent emails, paging past Resend's
+// per-request ceiling as needed.
+func (c *Client) ListEmailsN(total int) ([]EmailSummary, error) {
+	if total <= 0 {
+		total = 20
+	}
+
+	var (
+		all    []EmailSummary
+		cursor string
+	)
+	for len(all) < total {
+		page, hasMore, err := c.ListEmails(total-len(all), cursor)
+		if err != nil {
+			return all, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		all = append(all, page...)
+		if !hasMore {
+			break
+		}
+		cursor = page[len(page)-1].ID
+	}
+
+	if len(all) > total {
+		all = all[:total]
+	}
+	return all, nil
+}
+
+// timeLayouts are the shapes Resend timestamps arrive in.
+var timeLayouts = []string{
+	"2006-01-02 15:04:05.999999-07",
+	"2006-01-02 15:04:05.999999+00",
+	"2006-01-02T15:04:05.999Z",
+	time.RFC3339,
+}
+
+// ParseTime reads a Resend timestamp, returning the zero time when it cannot
+// be understood so callers can treat it as "unknown" rather than fail.
+func ParseTime(raw string) time.Time {
+	for _, layout := range timeLayouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }

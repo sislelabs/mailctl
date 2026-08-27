@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sislelabs/mailctl/internal"
-	"github.com/sislelabs/mailctl/internal/cloudflare"
-	"github.com/sislelabs/mailctl/internal/brevo"
-	"github.com/sislelabs/mailctl/internal/resend"
-	"github.com/sislelabs/mailctl/internal/ui"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/sislelabs/mailctl/internal"
+	"github.com/sislelabs/mailctl/internal/brevo"
+	"github.com/sislelabs/mailctl/internal/cloudflare"
+	"github.com/sislelabs/mailctl/internal/mailsetup"
+	"github.com/sislelabs/mailctl/internal/resend"
+	"github.com/sislelabs/mailctl/internal/ui"
 )
 
 type DetailModel struct {
@@ -153,7 +154,7 @@ func (m DetailModel) fetch() tea.Cmd {
 					}
 					data.sendDNS = append(data.sendDNS, dnsRecordInfo{
 						recType: rec.Type,
-						name:    resendRecordNameTUI(rec.Name, d.Domain),
+						name:    mailsetup.ResendRecordName(rec.Name, d.ZoneName()),
 						status:  state,
 					})
 				}

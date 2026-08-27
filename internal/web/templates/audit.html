@@ -1,0 +1,25 @@
+{{define "audit"}}
+<div class="card scroll">
+{{if .Report.Findings}}
+<table>
+  <tr><th>Level</th><th>Domain</th><th>Finding</th></tr>
+  {{range .Report.Findings}}
+  <tr>
+    <td><span class="pill {{levelClass .Level}}">{{.Level}}</span></td>
+    <td class="mono">{{if .Domain}}{{.Domain}}{{else}}<span class="muted">—</span>{{end}}</td>
+    <td>{{.Title}}<br><span class="muted">{{.Detail}}</span></td>
+  </tr>
+  {{end}}
+</table>
+{{else}}
+<div class="empty">Nothing to reconcile — config matches Cloudflare and Resend.</div>
+{{end}}
+</div>
+<p class="muted" style="font-size:.85rem">
+{{.Problems}} problem(s), {{.Warnings}} warning(s), {{.Infos}} note(s) ·
+{{len .Report.Zones}} Cloudflare zone(s) visible ·
+{{len .Report.ResendDomains}} Resend domain(s) ·
+{{len .Report.Managed}} managed here
+</p>
+{{end}}
+{{template "audit" .}}

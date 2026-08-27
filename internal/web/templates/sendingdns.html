@@ -1,0 +1,28 @@
+{{define "sendingdns"}}
+<div id="sendingdns">
+<div class="card scroll">
+{{if .Error}}
+  <div class="err" style="padding:.9rem">{{.Error}}</div>
+{{else}}
+<table>
+  <tr><th>Record</th><th>Name</th><th>State</th></tr>
+  {{range .Records}}
+  <tr>
+    <td>{{.Record}} <span class="muted mono">{{.Type}}</span></td>
+    <td class="mono">{{.Name}}</td>
+    <td>
+      {{if .OK}}<span class="pill ok">verified</span>
+      {{else}}<span class="pill {{if .Present}}warn{{else}}problem{{end}}">{{.Status}}</span>
+        <br><span class="muted">{{.Problem}}</span>
+      {{end}}
+    </td>
+  </tr>
+  {{else}}
+  <tr><td colspan="3" class="empty">The provider requires no records for this domain.</td></tr>
+  {{end}}
+</table>
+{{end}}
+</div>
+</div>
+{{end}}
+{{template "sendingdns" .}}

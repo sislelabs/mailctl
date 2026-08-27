@@ -3,6 +3,7 @@ package cloudflare
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,15 +28,20 @@ func NewClient(token string) *Client {
 
 // API response wrapper
 type apiResponse struct {
-	Success bool              `json:"success"`
-	Result  json.RawMessage   `json:"result"`
-	Errors  []apiError        `json:"errors"`
+	Success bool            `json:"success"`
+	Result  json.RawMessage `json:"result"`
+	Errors  []apiError      `json:"errors"`
 }
 
 type apiError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
+
+// ErrZoneNotFound reports that no zone exists for a name. It is distinguishable
+// so callers walking up a subdomain can tell "this label is not a zone" apart
+// from "the API rejected us", and stop walking on the latter.
+var ErrZoneNotFound = errors.New("no such zone")
 
 // Zone types
 type ZoneAccount struct {
@@ -54,11 +60,11 @@ type EmailRoutingStatus struct {
 }
 
 type RoutingRule struct {
-	ID       string          `json:"id"`
-	Name     string          `json:"name"`
-	Enabled  bool            `json:"enabled"`
-	Matchers []RuleMatcher   `json:"matchers"`
-	Actions  []RuleAction    `json:"actions"`
+	ID       string        `json:"id"`
+	Name     string        `json:"name"`
+	Enabled  bool          `json:"enabled"`
+	Matchers []RuleMatcher `json:"matchers"`
+	Actions  []RuleAction  `json:"actions"`
 }
 
 type RuleMatcher struct {
@@ -138,7 +144,7 @@ func (c *Client) GetZoneByName(domain string) (*Zone, error) {
 	}
 
 	if len(zones) == 0 {
-		return nil, fmt.Errorf("no zone found for %s — is it added to Cloudflare?", domain)
+		return nil, fmt.Errorf("%w: %s", ErrZoneNotFound, domain)
 	}
 
 	return &zones[0], nil
@@ -244,10 +250,21 @@ func (c *Client) ListDNSRecords(zoneID, recordType string) ([]DNSRecord, error) 
 	return records, nil
 }
 
-// CreateDNSRecord creates a DNS record.
-func (c *Client) CreateDNSRecord(zoneID string, record DNSRecord) error {
-	_, err := c.do("POST", fmt.Sprintf("/zones/%s/dns_records", zoneID), record)
-	return err
+// CreateDNSRecord creates a DNS record and returns its Cloudflare record ID.
+// The ID lets callers record exactly which records they created, so teardown
+// can delete only those rather than guessing from record names.
+func (c *Client) CreateDNSRecord(zoneID string, record DNSRecord) (string, error) {
+	resp, err := c.do("POST", fmt.Sprintf("/zones/%s/dns_records", zoneID), record)
+	if err != nil {
+		return "", err
+	}
+
+	var created DNSRecord
+	if err := json.Unmarshal(resp.Result, &created); err != nil {
+		// The record exists; we just could not read its ID back.
+		return "", nil
+	}
+	return created.ID, nil
 }
 
 // DeleteDNSRecord deletes a DNS record.

@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sislelabs/mailctl/internal"
-	"github.com/sislelabs/mailctl/internal/cloudflare"
-	"github.com/sislelabs/mailctl/internal/brevo"
-	"github.com/sislelabs/mailctl/internal/resend"
-	"github.com/sislelabs/mailctl/internal/ui"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sislelabs/mailctl/internal"
+	"github.com/sislelabs/mailctl/internal/cloudflare"
+	"github.com/sislelabs/mailctl/internal/mailsetup"
+	"github.com/sislelabs/mailctl/internal/store"
+	"github.com/sislelabs/mailctl/internal/ui"
 )
 
 // ── Aliases List View ───────────────────────────────────────────────────────
@@ -279,56 +279,23 @@ func (m DeleteConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// deleteDomain tears the domain down through the shared flow. The dashboard
+// has nowhere to show step-by-step progress here, so it discards it and
+// reports only the outcome.
 func deleteDomain(cfg *internal.Config, domain string) tea.Msg {
-	d := cfg.FindDomain(domain)
-	if d == nil {
+	if cfg.FindDomain(domain) == nil {
 		return StatusMsg{Text: "Domain not found"}
 	}
 
-	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
-
-	// Delete routing rules
-	rules, err := cf.ListRoutingRules(d.CloudflareZoneID)
-	if err == nil {
-		for _, rule := range rules {
-			for _, m := range rule.Matchers {
-				if strings.HasSuffix(m.Value, "@"+domain) {
-					cf.DeleteRoutingRule(d.CloudflareZoneID, rule.ID)
-					break
-				}
-			}
-		}
+	if _, err := mailsetup.RemoveDomain(store.NewYAML(), mailsetup.NopReporter{}, mailsetup.RemoveOptions{
+		Domain: domain,
+	}); err != nil {
+		return StatusMsg{Text: "Error: " + err.Error()}
 	}
 
-	// Delete the sending-provider domain
-	if cfg.SendingProvider() == internal.ProviderResend {
-		rc := resend.NewClient(cfg.ResendAPIKey)
-		id := d.ResendDomainID
-		if id == "" {
-			if rd, err := rc.FindDomainByName(domain); err == nil && rd != nil {
-				id = rd.ID
-			}
-		}
-		if id != "" {
-			rc.DeleteDomain(id)
-		}
-	} else {
-		bv := brevo.NewClient(cfg.BrevoAPIKey)
-		bv.DeleteDomain(domain)
-	}
-
-	// Delete DNS records
-	txtRecords, err := cf.ListDNSRecords(d.CloudflareZoneID, "TXT")
-	if err == nil {
-		for _, rec := range txtRecords {
-			if strings.Contains(rec.Name, "resend") || strings.Contains(rec.Content, "resend") || strings.Contains(rec.Content, "amazonses") || strings.Contains(rec.Name, "brevo") || strings.Contains(rec.Content, "brevo") || strings.Contains(rec.Name, "_domainkey") || strings.Contains(rec.Name, "_dmarc") {
-				cf.DeleteDNSRecord(d.CloudflareZoneID, rec.ID)
-			}
-		}
-	}
-
+	// The caller holds its own copy of the config; keep it in step with what
+	// was just written.
 	cfg.RemoveDomain(domain)
-	internal.SaveConfig(cfg)
 
 	return DomainDeletedMsg{Domain: domain}
 }
@@ -341,12 +308,23 @@ func (m DeleteConfirmModel) View() string {
 		ui.Error.Bold(true).Render("Delete "+m.domain) + "\n\n" +
 			ui.Dim.Render("This will remove:") + "\n" +
 			ui.Dim.Render("  "+ui.IconDot+" Cloudflare routing rules") + "\n" +
+			ui.Dim.Render("  "+ui.IconDot+" Catch-all forwarding") + "\n" +
 			ui.Dim.Render("  "+ui.IconDot+" "+m.providerName()+" domain") + "\n" +
-			ui.Dim.Render("  "+ui.IconDot+" DNS records") + "\n" +
+			ui.Dim.Render("  "+ui.IconDot+" "+m.dnsScope()) + "\n" +
 			ui.Dim.Render("  "+ui.IconDot+" Config entry") + "\n\n" +
 			"Type " + ui.Error.Bold(true).Render(m.domain) + " to confirm:\n\n" +
 			m.input.View(),
 	)
 	b.WriteString("  " + box)
 	return b.String()
+}
+
+// dnsScope describes exactly which DNS records deletion will touch, so the
+// confirmation prompt cannot imply a broader sweep than actually happens.
+func (m DeleteConfirmModel) dnsScope() string {
+	d := m.cfg.FindDomain(m.domain)
+	if d == nil || len(d.ManagedDNSRecordIDs) == 0 {
+		return "No DNS records (none tracked)"
+	}
+	return fmt.Sprintf("%d DNS records created by mailctl", len(d.ManagedDNSRecordIDs))
 }
