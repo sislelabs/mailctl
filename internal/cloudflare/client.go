@@ -43,6 +43,37 @@ type apiError struct {
 // from "the API rejected us", and stop walking on the latter.
 var ErrZoneNotFound = errors.New("no such zone")
 
+// CodeDestinationNotVerified is Cloudflare refusing a routing rule because the
+// address it forwards to has not been confirmed by its owner. Confirmation is a
+// link Cloudflare mails to that address; there is no API to click it for them.
+const CodeDestinationNotVerified = 2054
+
+// APIError is a failed Cloudflare API call. It carries the machine-readable
+// code so callers can branch on which failure this is, rather than matching on
+// message text that Cloudflare is free to reword.
+type APIError struct {
+	// Code is Cloudflare's error code, or zero when the response carried none.
+	Code int
+	// Message is Cloudflare's human-readable explanation.
+	Message string
+	// Status is the HTTP status the call came back with.
+	Status int
+}
+
+func (e *APIError) Error() string {
+	if e.Code == 0 {
+		return fmt.Sprintf("cloudflare API error (status %d)", e.Status)
+	}
+	return fmt.Sprintf("cloudflare API error: %s (code %d)", e.Message, e.Code)
+}
+
+// IsDestinationUnverified reports whether err is Cloudflare rejecting a rule
+// whose destination address is still unconfirmed.
+func IsDestinationUnverified(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Code == CodeDestinationNotVerified
+}
+
 // Zone types
 type ZoneAccount struct {
 	ID string `json:"id"`
@@ -123,9 +154,13 @@ func (c *Client) do(method, path string, body interface{}) (*apiResponse, error)
 
 	if !apiResp.Success {
 		if len(apiResp.Errors) > 0 {
-			return &apiResp, fmt.Errorf("cloudflare API error: %s (code %d)", apiResp.Errors[0].Message, apiResp.Errors[0].Code)
+			return &apiResp, &APIError{
+				Code:    apiResp.Errors[0].Code,
+				Message: apiResp.Errors[0].Message,
+				Status:  resp.StatusCode,
+			}
 		}
-		return &apiResp, fmt.Errorf("cloudflare API error (status %d)", resp.StatusCode)
+		return &apiResp, &APIError{Status: resp.StatusCode}
 	}
 
 	return &apiResp, nil
@@ -298,5 +333,17 @@ func (c *Client) ListDestinationAddresses(accountID string) ([]DestinationAddres
 func (c *Client) CreateDestinationAddress(accountID, email string) error {
 	body := map[string]string{"email": email}
 	_, err := c.do("POST", fmt.Sprintf("/accounts/%s/email/routing/addresses", accountID), body)
+	return err
+}
+
+// DeleteDestinationAddress removes a destination address from an account.
+//
+// Cloudflare exposes no endpoint for re-sending a verification email, so
+// deleting an unconfirmed address and creating it again is how a resend is
+// done. Deleting a confirmed address throws away a confirmation nobody can
+// redo on the owner's behalf, so callers must check status before reaching
+// for this.
+func (c *Client) DeleteDestinationAddress(accountID, addressID string) error {
+	_, err := c.do("DELETE", fmt.Sprintf("/accounts/%s/email/routing/addresses/%s", accountID, addressID), nil)
 	return err
 }

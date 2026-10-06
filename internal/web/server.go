@@ -10,6 +10,7 @@ package web
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sislelabs/mailctl/internal"
+	"github.com/sislelabs/mailctl/internal/cloudflare"
 	"github.com/sislelabs/mailctl/internal/mailsetup"
 	"github.com/sislelabs/mailctl/internal/store"
 )
@@ -92,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /domains/{domain}/aliases", s.handleAddAlias)
 	mux.HandleFunc("DELETE /domains/{domain}/aliases/{alias}", s.handleRemoveAlias)
 	mux.HandleFunc("POST /domains/{domain}/aliases/{alias}/forward", s.handleRepointAlias)
+	mux.HandleFunc("POST /domains/{domain}/destinations/verify", s.handleRequestVerification)
 	mux.HandleFunc("POST /domains", s.handleAddDomain)
 	mux.HandleFunc("GET /domains/{domain}/remove", s.handleRemoveConfirm)
 	mux.HandleFunc("DELETE /domains/{domain}", s.handleRemoveDomain)
@@ -217,6 +220,13 @@ type domainData struct {
 	// only a cache and goes stale as soon as a rule is edited elsewhere.
 	Aliases      []mailsetup.AliasView
 	AliasesError string
+	// Pending are forwarding addresses registered with the account that nobody
+	// has confirmed yet. They are account-wide, not per-domain, because that is
+	// how Cloudflare scopes a confirmation.
+	//
+	// This list is the only durable record that someone owes us a click: an
+	// alias whose rule was refused leaves nothing else behind to show.
+	Pending []mailsetup.DestinationStatus
 }
 
 func (s *Server) handleDomain(w http.ResponseWriter, r *http.Request) {
@@ -247,11 +257,54 @@ func (s *Server) handleAddAlias(w http.ResponseWriter, r *http.Request) {
 	}
 	alias := strings.TrimSpace(r.FormValue("alias"))
 
-	addErr := ""
+	// A destination waiting on its owner is not an error the operator can fix,
+	// so it reads as a notice. The pending list below the form is what keeps it
+	// visible after this fragment is swapped again.
+	addErr, notice := "", ""
 	if err := mailsetup.AddAlias(s.store, domain, alias, r.FormValue("forward_to")); err != nil {
-		addErr = err.Error()
+		var pending *mailsetup.DestinationPendingError
+		if errors.As(err, &pending) {
+			notice = pendingNotice(pending)
+		} else {
+			addErr = err.Error()
+		}
 	}
-	s.renderAliases(w, domain, addErr)
+	s.renderAliasesWith(w, domain, addErr, notice)
+}
+
+// pendingNotice explains an unconfirmed destination in the operator's terms:
+// who has to act, and that nothing was created.
+func pendingNotice(pending *mailsetup.DestinationPendingError) string {
+	sent := "Cloudflare has already asked them to confirm it"
+	if pending.JustRegistered {
+		sent = "Cloudflare has just emailed them to confirm it"
+	}
+	return "No rule created — " + pending.Email + " is not a confirmed destination. " + sent +
+		"; mail will route once they click the link. It often lands in spam."
+}
+
+// handleRequestVerification re-sends Cloudflare's confirmation email for a
+// forwarding address. It cannot confirm on the owner's behalf — no API can —
+// so the button's whole job is triggering that mail and surfacing the wait.
+func (s *Server) handleRequestVerification(w http.ResponseWriter, r *http.Request) {
+	domain := r.PathValue("domain")
+	if !s.requireMailbox(w, domain) {
+		return
+	}
+	email := strings.TrimSpace(r.FormValue("email"))
+
+	notice, errMsg := "", ""
+	status, err := mailsetup.RequestVerification(s.store, domain, email)
+	switch {
+	case err != nil:
+		errMsg = err.Error()
+	case status.Verified():
+		notice = email + " is already confirmed — nothing to send."
+	default:
+		notice = "Confirmation email sent to " + email +
+			". Mail will route once its owner clicks the link; it often lands in spam."
+	}
+	s.renderAliasesWith(w, domain, errMsg, notice)
 }
 
 func (s *Server) handleRemoveAlias(w http.ResponseWriter, r *http.Request) {
@@ -284,15 +337,15 @@ func (s *Server) handleRepointAlias(w http.ResponseWriter, r *http.Request) {
 	}
 
 	notice, errMsg := "", ""
-	result, err := mailsetup.RepointAlias(s.store, domain, r.PathValue("alias"), r.FormValue("forward_to"))
+	_, err := mailsetup.RepointAlias(s.store, domain, r.PathValue("alias"), r.FormValue("forward_to"))
+	var pending *mailsetup.DestinationPendingError
 	switch {
+	case errors.As(err, &pending):
+		// The alias still points where it did. Saying so matters: the operator
+		// asked for a change and did not get one.
+		notice = pendingNotice(pending) + " The address is unchanged until then."
 	case err != nil:
 		errMsg = err.Error()
-	case result.DestinationCreated:
-		notice = "Confirmation email sent to " + r.FormValue("forward_to") +
-			" — Cloudflare will not deliver there until it is confirmed."
-	case !result.DestinationVerified:
-		notice = r.FormValue("forward_to") + " is registered but not yet confirmed — mail will not be delivered until it is."
 	}
 	s.renderAliasesWith(w, domain, errMsg, notice)
 }
@@ -318,6 +371,15 @@ func (s *Server) renderAliasesWith(w http.ResponseWriter, domain, errMsg, notice
 	} else {
 		data.Aliases = views
 	}
+
+	// Unconfirmed destinations are read separately from the alias list: an
+	// address can be waiting on its owner with no rule pointing at it yet,
+	// which is exactly the case that would otherwise leave no trace.
+	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
+	if pending, err := mailsetup.UnverifiedDestinations(cf, mailsetup.AccountFor(cf, cfg, d)); err == nil {
+		data.Pending = pending
+	}
+
 	s.renderFragment(w, "aliases", data)
 }
 

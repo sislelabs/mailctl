@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sislelabs/mailctl/internal"
+	"github.com/sislelabs/mailctl/internal/mailsetup"
 	"github.com/sislelabs/mailctl/internal/store"
 )
 
@@ -411,5 +412,172 @@ func TestSendingDomainOpensItsDNS(t *testing.T) {
 	}
 	if strings.Contains(body, "Send from Gmail") {
 		t.Error("a sending domain cannot be added to Gmail")
+	}
+}
+
+// TestPendingDestinationRendersTheAsk renders the alias fragment directly,
+// because reaching this state through a handler would need a live Cloudflare
+// account read. What matters is that an unconfirmed address produces something
+// the operator can act on rather than a silent gap.
+func TestPendingDestinationRendersTheAsk(t *testing.T) {
+	cfg := &internal.Config{Provider: internal.ProviderResend, DefaultForwardTo: "you@example.com"}
+	cfg.AddDomain("example.com", "zone1", nil)
+
+	srv, err := NewServer(&store.Memory{Config: cfg})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.renderFragment(rec, "aliases", domainData{
+		Domain:    cfg.FindDomain("example.com"),
+		ForwardTo: "you@example.com",
+		Pending: []mailsetup.DestinationStatus{
+			{Email: "them@corp.example", State: mailsetup.DestinationPending},
+		},
+	})
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		"them@corp.example",
+		"Waiting on confirmation",
+		`hx-post="/domains/example.com/destinations/verify"`,
+		"resend confirmation",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("pending block missing %q, got:\n%s", want, body)
+		}
+	}
+
+	// Polling exists only to catch the moment someone clicks. Without a pending
+	// address it would be a timer against a state that cannot change on its own.
+	if !strings.Contains(body, `hx-trigger="every 30s"`) {
+		t.Errorf("expected polling while an address is pending, got:\n%s", body)
+	}
+}
+
+func TestNothingPendingMeansNoPolling(t *testing.T) {
+	rec := httptest.NewRecorder()
+	h := testServer(t)
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/domains/example.com/aliases", nil))
+
+	if strings.Contains(rec.Body.String(), "hx-trigger") {
+		t.Errorf("no address is waiting, so the fragment must not poll:\n%s", rec.Body.String())
+	}
+}
+
+// TestUnconfirmedDestinationIsFlaggedOnTheAliasRow covers the case that looks
+// healthy and is not: the rule exists, so the alias lists normally, but nothing
+// is being delivered.
+func TestUnconfirmedDestinationIsFlaggedOnTheAliasRow(t *testing.T) {
+	cfg := &internal.Config{Provider: internal.ProviderResend, DefaultForwardTo: "you@example.com"}
+	cfg.AddDomain("example.com", "zone1", []internal.Alias{
+		{Alias: "hello", ForwardTo: []string{"them@corp.example"}},
+	})
+
+	srv, err := NewServer(&store.Memory{Config: cfg})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.renderFragment(rec, "aliases", domainData{
+		Domain:    cfg.FindDomain("example.com"),
+		ForwardTo: "you@example.com",
+		Aliases: []mailsetup.AliasView{{
+			Alias:              "hello",
+			Address:            "hello@example.com",
+			ForwardTo:          []string{"them@corp.example"},
+			DestinationChecked: true,
+			Destination:        mailsetup.DestinationStatus{Email: "them@corp.example", State: mailsetup.DestinationPending},
+		}},
+	})
+
+	if !strings.Contains(rec.Body.String(), "mail here is not being delivered") {
+		t.Errorf("expected the row to say delivery is not happening, got:\n%s", rec.Body.String())
+	}
+}
+
+// TestCheckedAndConfirmedRowStaysQuiet guards against badging every row: a
+// warning that is always on is one nobody reads.
+func TestCheckedAndConfirmedRowStaysQuiet(t *testing.T) {
+	cfg := &internal.Config{Provider: internal.ProviderResend, DefaultForwardTo: "you@example.com"}
+	cfg.AddDomain("example.com", "zone1", nil)
+
+	srv, err := NewServer(&store.Memory{Config: cfg})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.renderFragment(rec, "aliases", domainData{
+		Domain: cfg.FindDomain("example.com"),
+		Aliases: []mailsetup.AliasView{{
+			Alias:              "hello",
+			Address:            "hello@example.com",
+			ForwardTo:          []string{"you@example.com"},
+			DestinationChecked: true,
+			Destination:        mailsetup.DestinationStatus{Email: "you@example.com", State: mailsetup.DestinationVerified},
+		}},
+	})
+
+	if strings.Contains(rec.Body.String(), "not confirmed") {
+		t.Errorf("a confirmed destination must not be badged:\n%s", rec.Body.String())
+	}
+}
+
+// TestUncheckedDestinationIsNotCalledUnconfirmed matters because the account
+// read is allowed to fail: "we could not check" must not render as "this is
+// broken", or a Cloudflare hiccup would look like every alias going dark.
+func TestUncheckedDestinationIsNotCalledUnconfirmed(t *testing.T) {
+	cfg := &internal.Config{Provider: internal.ProviderResend, DefaultForwardTo: "you@example.com"}
+	cfg.AddDomain("example.com", "zone1", nil)
+
+	srv, err := NewServer(&store.Memory{Config: cfg})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.renderFragment(rec, "aliases", domainData{
+		Domain: cfg.FindDomain("example.com"),
+		Aliases: []mailsetup.AliasView{{
+			Alias:              "hello",
+			Address:            "hello@example.com",
+			ForwardTo:          []string{"them@corp.example"},
+			DestinationChecked: false,
+		}},
+	})
+
+	if strings.Contains(rec.Body.String(), "not confirmed") {
+		t.Errorf("an unchecked destination must not be badged:\n%s", rec.Body.String())
+	}
+}
+
+func TestPendingNoticeSaysWhoHasToAct(t *testing.T) {
+	fresh := pendingNotice(&mailsetup.DestinationPendingError{Email: "them@corp.example", JustRegistered: true})
+	if !strings.Contains(fresh, "just emailed them") {
+		t.Errorf("a fresh registration should say the mail just went out, got: %s", fresh)
+	}
+	if !strings.Contains(fresh, "No rule created") {
+		t.Errorf("the notice must say nothing was created, got: %s", fresh)
+	}
+
+	stale := pendingNotice(&mailsetup.DestinationPendingError{Email: "them@corp.example"})
+	if !strings.Contains(stale, "already asked them") {
+		t.Errorf("an existing registration should say the ask is old, got: %s", stale)
+	}
+}
+
+func TestVerifyRouteIsWired(t *testing.T) {
+	// The Cloudflare call behind this fails without a real token; what is under
+	// test is that the button's endpoint exists and answers with a fragment
+	// htmx can swap, not a 404 or a 405.
+	rec := post(t, testServer(t), "/domains/example.com/destinations/verify", "email=them@corp.example")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `id="aliases"`) {
+		t.Errorf("expected the alias fragment back, got:\n%s", rec.Body.String())
 	}
 }

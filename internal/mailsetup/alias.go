@@ -41,6 +41,20 @@ func AddAlias(st store.Store, domain, alias, forwardTo string) error {
 
 	addr := fmt.Sprintf("%s@%s", alias, domain)
 	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
+
+	// Cloudflare refuses a rule whose target nobody has confirmed, so register
+	// the target first — that is what sends the confirmation email — and stop
+	// here if it is still unconfirmed. Creating the rule anyway would fail with
+	// a bare API code that says nothing about whose inbox the work sits in.
+	accountID := AccountFor(cf, cfg, d)
+	dest, justRegistered, err := EnsureDestination(cf, accountID, forwardTo)
+	if err != nil {
+		return err
+	}
+	if !dest.Verified() {
+		return &DestinationPendingError{Email: forwardTo, JustRegistered: justRegistered}
+	}
+
 	rule := cloudflare.RoutingRule{
 		Name:     "Forward " + addr,
 		Enabled:  true,
@@ -48,6 +62,11 @@ func AddAlias(st store.Store, domain, alias, forwardTo string) error {
 		Actions:  []cloudflare.RuleAction{{Type: "forward", Value: []string{forwardTo}}},
 	}
 	if err := cf.CreateRoutingRule(d.CloudflareZoneID, rule); err != nil {
+		// A confirmation can be revoked between the read above and this write.
+		// Report that as the pending state it is, not as a raw API code.
+		if cloudflare.IsDestinationUnverified(err) {
+			return &DestinationPendingError{Email: forwardTo}
+		}
 		return fmt.Errorf("create routing rule: %w", err)
 	}
 
@@ -126,6 +145,14 @@ type AliasView struct {
 	Drifted bool
 	// Untracked is true when Cloudflare has the rule but config does not.
 	Untracked bool
+	// Destination is confirmation state for the address this alias forwards
+	// to. A rule can exist while its target sits unconfirmed, in which case
+	// the alias looks healthy and delivers nothing.
+	Destination DestinationStatus
+	// DestinationChecked is false when the account read failed. Callers must
+	// not draw conclusions about confirmation when it is unset — an unchecked
+	// address is not the same as an unconfirmed one.
+	DestinationChecked bool
 }
 
 // ListAliases returns every address routing on a domain, read live from
@@ -168,11 +195,50 @@ func ListAliases(cfg *internal.Config, d *internal.DomainConfig) ([]AliasView, e
 		}
 	}
 
+	annotateDestinations(cf, cfg, d, views)
 	return views, nil
+}
+
+// annotateDestinations fills in confirmation state for each alias's forwarding
+// target, in one account read rather than one per row.
+//
+// A failed read leaves DestinationChecked false on every view: routing rules
+// are the answer callers asked for, and losing the whole list because a
+// secondary lookup failed would be worse than showing it without badges.
+func annotateDestinations(cf *cloudflare.Client, cfg *internal.Config, d *internal.DomainConfig, views []AliasView) {
+	if len(views) == 0 {
+		return
+	}
+
+	var targets []string
+	for _, v := range views {
+		if len(v.ForwardTo) > 0 {
+			targets = append(targets, v.ForwardTo[0])
+		}
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	statuses, err := DestinationsFor(cf, AccountFor(cf, cfg, d), targets)
+	if err != nil {
+		return
+	}
+	for i := range views {
+		if len(views[i].ForwardTo) == 0 {
+			continue
+		}
+		if status, ok := statuses[strings.ToLower(views[i].ForwardTo[0])]; ok {
+			views[i].Destination = status
+			views[i].DestinationChecked = true
+		}
+	}
 }
 
 // RepointResult reports what repointing an alias produced.
 type RepointResult struct {
+	// Destination is where confirmation stands for the new target.
+	Destination DestinationStatus
 	// DestinationCreated is true when the target had to be registered with
 	// Cloudflare as a destination address.
 	DestinationCreated bool
@@ -204,29 +270,23 @@ func RepointAlias(st store.Store, domain, alias, forwardTo string) (*RepointResu
 	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
 	result := &RepointResult{}
 
-	// Cloudflare rejects a rule pointing at an unregistered destination, so
-	// register it first and report whether it is usable yet.
-	//
-	// The account comes from the zone, not from config: destination addresses
-	// are verified per account, and asking the wrong one reports every address
-	// as unregistered while quietly creating it somewhere it will never be used.
-	accountID := cfg.CloudflareAccountID
-	if zone, err := cf.GetZoneByName(d.ZoneName()); err == nil {
-		accountID = zone.Account.ID
+	// Cloudflare rejects a rule pointing at an address nobody has confirmed, so
+	// register it first — which sends the confirmation email — and stop if it is
+	// still unconfirmed. Attempting the update anyway would fail and leave the
+	// caller with an API code instead of "we are waiting on this person".
+	accountID := AccountFor(cf, cfg, d)
+	dest, justRegistered, err := EnsureDestination(cf, accountID, forwardTo)
+	if err != nil {
+		return nil, err
 	}
-	if addrs, err := cf.ListDestinationAddresses(accountID); err == nil {
-		for _, a := range addrs {
-			if strings.EqualFold(a.Email, forwardTo) {
-				result.DestinationVerified = a.Verified != ""
-				goto haveDestination
-			}
-		}
-		if err := cf.CreateDestinationAddress(accountID, forwardTo); err != nil {
-			return nil, fmt.Errorf("register %s as a destination: %w", forwardTo, err)
-		}
-		result.DestinationCreated = true
+	result.Destination = dest
+	result.DestinationCreated = justRegistered
+	result.DestinationVerified = dest.Verified()
+	if !dest.Verified() {
+		// The existing rule is left pointing where it was. Repointing it at an
+		// address that cannot receive would silently black-hole the alias.
+		return result, &DestinationPendingError{Email: forwardTo, JustRegistered: justRegistered}
 	}
-haveDestination:
 
 	address := fmt.Sprintf("%s@%s", alias, domain)
 	rules, err := cf.ListRoutingRules(d.CloudflareZoneID)

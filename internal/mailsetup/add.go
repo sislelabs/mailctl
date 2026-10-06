@@ -64,11 +64,16 @@ type AddOptions struct {
 type AddResult struct {
 	// ReceivingBroken is true when Email Routing could not be enabled, so the
 	// domain has rules but no MX records to deliver through.
-	ReceivingBroken  bool
-	ZoneID           string
-	ResendDomainID   string
-	ManagedRecordIDs []string
-	Aliases          []internal.Alias
+	ReceivingBroken bool
+	// PendingDestination names the forwarding address still waiting on its
+	// owner to confirm it. Non-empty means no routing rules were created:
+	// Cloudflare refuses to point one at an unconfirmed address, and the person
+	// who has to click may well be outside the operator's organisation.
+	PendingDestination string
+	ZoneID             string
+	ResendDomainID     string
+	ManagedRecordIDs   []string
+	Aliases            []internal.Alias
 }
 
 // AddDomain sets up receiving and sending for a domain and persists the result.
@@ -150,64 +155,80 @@ func AddDomain(st store.Store, rep Reporter, opts AddOptions) (*AddResult, error
 		rep.Step(AddStepRouting, StepDone, "")
 	}
 
-	// Step 2: the destination address must be verified before anything routes.
+	// Step 2: the destination address must be confirmed before anything routes.
 	rep.Step(AddStepDestination, StepRunning, "")
-	destVerified := false
-	if addrs, err := cf.ListDestinationAddresses(zone.Account.ID); err == nil {
-		for _, a := range addrs {
-			if a.Email == forwardTo && a.Verified != "" {
-				destVerified = true
-				break
-			}
-		}
-	}
-	if destVerified {
-		rep.Step(AddStepDestination, StepDone, forwardTo+" — verified")
-	} else if err := cf.CreateDestinationAddress(zone.Account.ID, forwardTo); err != nil {
+	dest, justRegistered, destErr := EnsureDestination(cf, zone.Account.ID, forwardTo)
+	switch {
+	case destErr != nil:
 		rep.Step(AddStepDestination, StepWarn, forwardTo+" — check Cloudflare Email Routing > Destination addresses")
-	} else {
-		rep.Step(AddStepDestination, StepWarn, forwardTo+" — verification email sent, confirm it before mail will route")
+	case dest.Verified():
+		rep.Step(AddStepDestination, StepDone, forwardTo+" — verified")
+	case justRegistered:
+		rep.Step(AddStepDestination, StepWarn, forwardTo+" — confirmation email sent, its owner must click the link before mail will route")
+	default:
+		rep.Step(AddStepDestination, StepWarn, forwardTo+" — registered but not confirmed, its owner must click the link Cloudflare sent them")
 	}
 
 	// Step 3: one forwarding rule per alias.
+	//
+	// Cloudflare refuses every one of these while the destination is
+	// unconfirmed, so an unconfirmed address short-circuits the step. Trying
+	// anyway would print the same API code once per alias and bury the one fact
+	// that matters: someone has to click a link.
 	rep.Step(AddStepRules, StepRunning, "")
-	ruleErrors := 0
-	for _, alias := range aliases {
-		addr := fmt.Sprintf("%s@%s", alias, domain)
-		rule := cloudflare.RoutingRule{
-			Name:     fmt.Sprintf("Forward %s", addr),
-			Enabled:  true,
-			Matchers: []cloudflare.RuleMatcher{{Type: "literal", Field: "to", Value: addr}},
-			Actions:  []cloudflare.RuleAction{{Type: "forward", Value: []string{forwardTo}}},
+	switch {
+	case !dest.Verified():
+		result.PendingDestination = forwardTo
+		rep.Step(AddStepRules, StepWarn, "waiting on "+forwardTo)
+		rep.Note(AddStepRules, NoteError, "No rules created — Cloudflare will not point one at an unconfirmed address. Re-run this once "+forwardTo+" is confirmed.")
+		for _, alias := range aliases {
+			result.Aliases = append(result.Aliases, internal.Alias{Alias: alias, ForwardTo: []string{forwardTo}})
 		}
-		if err := cf.CreateRoutingRule(zone.ID, rule); err != nil {
-			rep.Note(AddStepRules, NoteError, addr+" — "+err.Error())
-			ruleErrors++
+	default:
+		ruleErrors := 0
+		for _, alias := range aliases {
+			addr := fmt.Sprintf("%s@%s", alias, domain)
+			rule := cloudflare.RoutingRule{
+				Name:     fmt.Sprintf("Forward %s", addr),
+				Enabled:  true,
+				Matchers: []cloudflare.RuleMatcher{{Type: "literal", Field: "to", Value: addr}},
+				Actions:  []cloudflare.RuleAction{{Type: "forward", Value: []string{forwardTo}}},
+			}
+			if err := cf.CreateRoutingRule(zone.ID, rule); err != nil {
+				rep.Note(AddStepRules, NoteError, addr+" — "+err.Error())
+				ruleErrors++
+			} else {
+				rep.Note(AddStepRules, NoteOK, addr+" → "+forwardTo)
+			}
+			result.Aliases = append(result.Aliases, internal.Alias{
+				Alias:     alias,
+				ForwardTo: []string{forwardTo},
+			})
+		}
+		if ruleErrors > 0 {
+			rep.Step(AddStepRules, StepWarn, fmt.Sprintf("%d failed", ruleErrors))
 		} else {
-			rep.Note(AddStepRules, NoteOK, addr+" → "+forwardTo)
+			rep.Step(AddStepRules, StepDone, fmt.Sprintf("%d rules", len(aliases)))
 		}
-		result.Aliases = append(result.Aliases, internal.Alias{
-			Alias:     alias,
-			ForwardTo: []string{forwardTo},
-		})
-	}
-	if ruleErrors > 0 {
-		rep.Step(AddStepRules, StepWarn, fmt.Sprintf("%d failed", ruleErrors))
-	} else {
-		rep.Step(AddStepRules, StepDone, fmt.Sprintf("%d rules", len(aliases)))
 	}
 
 	// Step 4: catch-all, so mail to any address on the domain still arrives.
+	// It forwards to the same address, so it is blocked by the same wait.
 	rep.Step(AddStepCatchAll, StepRunning, "")
-	catchAll := cloudflare.RoutingRule{
-		Enabled:  true,
-		Matchers: []cloudflare.RuleMatcher{{Type: "all"}},
-		Actions:  []cloudflare.RuleAction{{Type: "forward", Value: []string{forwardTo}}},
-	}
-	if err := cf.UpdateCatchAllRule(zone.ID, catchAll); err != nil {
-		rep.Step(AddStepCatchAll, StepWarn, err.Error())
-	} else {
-		rep.Step(AddStepCatchAll, StepDone, "*@"+domain+" → "+forwardTo)
+	switch {
+	case !dest.Verified():
+		rep.Step(AddStepCatchAll, StepWarn, "waiting on "+forwardTo)
+	default:
+		catchAll := cloudflare.RoutingRule{
+			Enabled:  true,
+			Matchers: []cloudflare.RuleMatcher{{Type: "all"}},
+			Actions:  []cloudflare.RuleAction{{Type: "forward", Value: []string{forwardTo}}},
+		}
+		if err := cf.UpdateCatchAllRule(zone.ID, catchAll); err != nil {
+			rep.Step(AddStepCatchAll, StepWarn, err.Error())
+		} else {
+			rep.Step(AddStepCatchAll, StepDone, "*@"+domain+" → "+forwardTo)
+		}
 	}
 
 	// Steps 5–8: register with the sending provider and publish its DNS.

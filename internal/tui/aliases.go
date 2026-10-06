@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -189,29 +190,25 @@ func (m AddAliasModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func addAlias(cfg *internal.Config, domain, alias string) tea.Msg {
-	d := cfg.FindDomain(domain)
-	if d == nil {
+	if cfg.FindDomain(domain) == nil {
 		return StatusMsg{Text: "Domain not found"}
 	}
 
-	addr := fmt.Sprintf("%s@%s", alias, domain)
-	forwardTo := cfg.DefaultForwardTo
+	// Empty forward-to lets AddAlias resolve the domain's default, the same way
+	// the CLI and the panel do.
+	err := mailsetup.AddAlias(store.NewYAML(), domain, alias, "")
 
-	cf := cloudflare.NewClient(cfg.CloudflareAPIToken)
-	rule := cloudflare.RoutingRule{
-		Name: fmt.Sprintf("Forward %s", addr), Enabled: true,
-		Matchers: []cloudflare.RuleMatcher{{Type: "literal", Field: "to", Value: addr}},
-		Actions:  []cloudflare.RuleAction{{Type: "forward", Value: []string{forwardTo}}},
-	}
-
-	if err := cf.CreateRoutingRule(d.CloudflareZoneID, rule); err != nil {
+	var pending *mailsetup.DestinationPendingError
+	switch {
+	case err == nil:
+		return AliasAddedMsg{Domain: domain, Alias: alias}
+	case errors.As(err, &pending):
+		// Not a failure anyone can fix from here: the address is waiting on its
+		// owner to click Cloudflare's link, and they may not be in this org.
+		return StatusMsg{Text: "Waiting on " + pending.Email + " to confirm — no rule created yet"}
+	default:
 		return StatusMsg{Text: "Failed: " + err.Error()}
 	}
-
-	d.AddAlias(alias, []string{forwardTo})
-	internal.SaveConfig(cfg)
-
-	return AliasAddedMsg{Domain: domain, Alias: alias}
 }
 
 func (m AddAliasModel) View() string {

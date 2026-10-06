@@ -51,8 +51,9 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	labels := mailsetup.AddStepLabels(mailsetup.ProviderLabel(cfg))
 
 	var runErr error
+	var result *mailsetup.AddResult
 	uiErr := ui.RunProgress("Setting up "+ui.Highlight.Render(opts.Domain), labels, func(p *ui.ProgressRunner) {
-		_, runErr = mailsetup.AddDomain(st, progressReporter(p), opts)
+		result, runErr = mailsetup.AddDomain(st, progressReporter(p), opts)
 	})
 	if uiErr != nil {
 		return uiErr
@@ -61,8 +62,35 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return runErr
 	}
 
+	// Sending is set up either way, but nothing receives until the forwarding
+	// address is confirmed. Claiming the domain "is set up" here would be a lie
+	// the operator only discovers when mail goes missing.
+	if result != nil && result.PendingDestination != "" {
+		fmt.Print("\n" + pendingPanel(opts.Domain, result.PendingDestination) + "\n")
+		return nil
+	}
+
 	fmt.Print("\n" + successPanel(provider, opts.Domain, cfg) + "\n")
 	return nil
+}
+
+// pendingPanel replaces the success panel when the forwarding address is still
+// unconfirmed, because the domain is not finished and no routing rules exist.
+//
+// The address often belongs to someone outside the operator's organisation, so
+// the text is written to be forwarded to them.
+func pendingPanel(domain, forwardTo string) string {
+	return ui.WarnPanel.Render(
+		ui.Warn.Bold(true).Render(domain+" is not receiving yet") + "\n\n" +
+			ui.Dim.Render("No routing rules were created: Cloudflare will not point one") + "\n" +
+			ui.Dim.Render("at an address nobody has confirmed.") + "\n\n" +
+			ui.Dim.Render("Waiting on ") + ui.Highlight.Render(forwardTo) + "\n\n" +
+			ui.Dim.Render("Its owner has to click the link in the email from Cloudflare,") + "\n" +
+			ui.Dim.Render("subject \"Verify your email address\". It often lands in spam,") + "\n" +
+			ui.Dim.Render("and nobody can click it on their behalf.") + "\n\n" +
+			ui.Dim.Render("Then re-run ") + ui.Highlight.Render("mailctl add "+domain) + "\n" +
+			ui.Dim.Render("Check progress with ") + ui.Highlight.Render("mailctl check "+domain),
+	)
 }
 
 // successPanel renders the post-setup instructions, tailored to the provider.

@@ -1,5 +1,8 @@
 {{define "aliases"}}
-<div id="aliases">
+{{/* Polling only runs while something is actually waiting on a person. An
+     unconditional timer would hammer Cloudflare for a state that never changes
+     on its own. */}}
+<div id="aliases"{{if .Pending}} hx-get="/domains/{{.Domain.Domain}}/aliases" hx-trigger="every 30s" hx-swap="outerHTML"{{end}}>
 <div class="card">
 {{if .AliasesError}}
   <div class="err" style="padding:.9rem">Could not read live routing: {{.AliasesError}}</div>
@@ -17,8 +20,16 @@
       <form class="repoint" hx-post="/domains/{{$.Domain.Domain}}/aliases/{{.Alias}}/forward"
             hx-target="#aliases" hx-swap="outerHTML">
         <input type="text" name="forward_to" class="mono" value="{{join .ForwardTo ", "}}" aria-label="destination for {{.Address}}">
-        <button type="submit" class="ghost save">save</button>
+        <button type="submit" class="ghost act save">save</button>
       </form>
+      {{/* A rule can exist while its target sits unconfirmed, in which case
+           this row looks healthy and delivers nothing. Say so. */}}
+      {{if and .DestinationChecked (not .Destination.Verified)}}
+      <div style="margin-top:.35rem">
+        <span class="pill warn">not confirmed</span>
+        <span class="why" style="color:var(--muted);font-size:.85rem">mail here is not being delivered</span>
+      </div>
+      {{end}}
     </td>
     <td style="text-align:right">
       <button class="ghost"
@@ -41,6 +52,33 @@
 {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
 {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
 </div>
+
+{{/* Addresses waiting on their owner. This is the only durable record that
+     someone owes a click: an alias whose rule Cloudflare refused leaves nothing
+     else behind, and the notice above vanishes on the next swap. */}}
+{{if .Pending}}
+<h2>Waiting on confirmation</h2>
+<div class="card">
+  {{range .Pending}}
+  <div class="pending">
+    <div class="who">
+      <span class="mono">{{.Email}}</span>
+      <span class="pill warn">not confirmed</span>
+      <form hx-post="/domains/{{$.Domain.Domain}}/destinations/verify"
+            hx-target="#aliases" hx-swap="outerHTML">
+        <input type="hidden" name="email" value="{{.Email}}">
+        <button type="submit" class="ghost act">resend confirmation</button>
+      </form>
+    </div>
+    <div class="why">
+      Cloudflare will not route to this address, or let a rule point at it, until
+      its owner clicks the link it emailed them — subject &ldquo;Verify your email
+      address&rdquo;. Nobody can click it on their behalf, and it often lands in spam.
+    </div>
+  </div>
+  {{end}}
+</div>
+{{end}}
 </div>
 {{end}}
 {{template "aliases" .}}

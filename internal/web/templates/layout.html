@@ -57,6 +57,14 @@ button {
 }
 button.ghost { background: transparent; color: var(--muted); border-color: var(--line); font-weight: 500; }
 button.ghost:hover { color: var(--bad); border-color: var(--bad); }
+/* Ghost buttons default to a destructive hover. Actions that build something
+   rather than remove it opt out with .act. */
+button.ghost.act:hover { color: var(--accent); border-color: var(--accent); }
+.pending { border-bottom: 1px solid var(--line); padding: .8rem .9rem; }
+.pending:last-child { border-bottom: 0; }
+.pending .who { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.pending .why { color: var(--muted); font-size: .85rem; margin-top: .3rem; }
+.pending form { display: inline; }
 .err { color: var(--bad); padding: 0 .9rem .7rem; font-size: .88rem; }
 .notice { color: var(--warn); padding: 0 .9rem .7rem; font-size: .88rem; }
 form.repoint { display: flex; gap: .4rem; align-items: center; margin: 0; }
